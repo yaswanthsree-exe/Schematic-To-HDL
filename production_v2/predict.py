@@ -3077,6 +3077,23 @@ def build_gate_graph(
             existing = pin_inputs.get(gid_dst, {}).get(pidx)
             if existing in gate_ids:
                 continue   # wire-traced gate connection — don't override
+            # Substantial-wire guard (same rule as the wide-proximity pass):
+            # when the pin already carries a primary input traced over a real
+            # wire, keep it.  Without this, a NOT gate sitting close to an
+            # AND could claim BOTH of the AND's input pins — its true target
+            # pin is excluded from candidates (already wired), so the
+            # proximity match slid onto the AND's OTHER pin and overwrote a
+            # correctly-traced input rail (AND(B, ~B) became AND(~B, ~B)).
+            if isinstance(existing, str) and existing in global_inputs:
+                _nid_fl = (pin_nets or {}).get((gid_dst, 'in', pidx))
+                if _nid_fl is not None and _nid_fl not in demoted_nets:
+                    _is_forced_fl = (forced_primary_nets is not None
+                                     and _nid_fl in forced_primary_nets)
+                    if _is_forced_fl or _net_path_px(_nid_fl) >= MIN_PRIMARY_PIX // 2:
+                        log.info("Gate-proximity skipped: %s → %s.in[%d] — "
+                                 "pin keeps real wire input '%s'",
+                                 gid_src, gid_dst, pidx, existing)
+                        continue
             pin_inputs.setdefault(gid_dst, {})[pidx] = gid_src
             log.info("Gate-proximity applied: %s → %s.in[%d]  (was: %s)",
                      gid_src, gid_dst, pidx, existing)
