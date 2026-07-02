@@ -1102,6 +1102,132 @@ def assign_endpoints(
     return assignment
 
 
+# ── Stage 5.5: Contact-based pin refinement ───────────────────────────────────
+
+def _contact_edge(edge_lbl: np.ndarray, skel_graph: SkelGraph,
+                  cx: int, cy: int, max_r: int = 6
+                  ) -> Optional[Tuple[int, str]]:
+    """Nearest skeleton edge to a contact pixel; returns (eid, end_char)."""
+    h, w = edge_lbl.shape
+    best_d2, best_eid = None, None
+    for r in range(0, max_r + 1):
+        x0s, x1s = max(0, cx - r), min(w, cx + r + 1)
+        y0s, y1s = max(0, cy - r), min(h, cy + r + 1)
+        region = edge_lbl[y0s:y1s, x0s:x1s]
+        ys, xs = np.where(region > 0)
+        if len(xs) == 0:
+            continue
+        d2s = (xs + x0s - cx) ** 2 + (ys + y0s - cy) ** 2
+        k = int(np.argmin(d2s))
+        if best_d2 is None or d2s[k] < best_d2:
+            best_d2 = int(d2s[k])
+            best_eid = int(region[ys[k], xs[k]]) - 1
+        break   # first ring with any hit contains the nearest pixel (±1 ring)
+    if best_eid is None:
+        return None
+    path = skel_graph.edges[best_eid].path
+    da = (path[0][0] - cx) ** 2 + (path[0][1] - cy) ** 2
+    db = (path[-1][0] - cx) ** 2 + (path[-1][1] - cy) ** 2
+    return best_eid, ("a" if da <= db else "b")
+
+
+def contact_refine_pins(
+        boxes:      List[Dict],
+        skel_graph: SkelGraph,
+        binary:     np.ndarray,
+        assignment: Dict[Tuple[str, str, int], Tuple[int, str]],
+) -> Dict[Tuple[str, str, int], Tuple[int, str]]:
+    """Pin-first contact assignment (idea adapted from the old predict_v2).
+
+    Endpoint snapping GUESSES which skeleton endpoint belongs to a pin from
+    proximity + direction scores; when the true wire's endpoint is not clean
+    (mesh, bend, gap) the snap grabs a nearby WRONG wire — the root cause of
+    a recurring class of pin errors (e.g. a NAND's C input assigned to the
+    neighbouring NAND's output net).
+
+    A wire stub physically TOUCHING the gate's erased boundary is definitive:
+    whatever ink meets the gate IS what is electrically connected.  For each
+    ink run in the 2-px band hugging the erasure (left side = inputs, right
+    side = output), look up the skeleton edge at the contact point and assign
+    the pin to that edge.  Pins without a clean contact keep their existing
+    endpoint-snap assignment (fallback).
+    """
+    edge_lbl = _build_edge_label_img(skel_graph, binary.shape,
+                                     min_len=MIN_EDGE_LEN)
+    h, w = binary.shape
+    refined = dict(assignment)
+    n_ref = 0
+
+    def _band_runs(xa: int, xb: int, ya: int, yb: int) -> List[int]:
+        """Y-centres of ink runs (≤6 px tall) in the vertical band."""
+        if xb <= xa:
+            return []
+        band = (binary[ya:yb, xa:xb] > 0).any(axis=1)
+        runs, s = [], None
+        for i, v in enumerate(band):
+            if v and s is None:
+                s = i
+            elif not v and s is not None:
+                runs.append((s, i - 1)); s = None
+        if s is not None:
+            runs.append((s, len(band) - 1))
+        return [ya + (a + z) // 2 for (a, z) in runs if (z - a + 1) <= 6]
+
+    for b in boxes:
+        gid     = b["id"]
+        n_in    = b.get("fan_in", GATE_N_IN.get(b["cls"], 2))
+        centers = gate_pin_centers(b)
+        y0 = max(0, b["y"] - 2)
+        y1 = min(h, b["y"] + b["h"] + 2)
+
+        # ── input side ────────────────────────────────────────────────────
+        ix1 = max(0, b["x"] - GATE_PAD)
+        ix0 = max(0, ix1 - 2)
+        pin_ys_c = [py for (_px, py) in centers["in"][:n_in]]
+        used: Set[int] = set()
+        # match contacts to pins best-first (smallest |Δy| pairs first)
+        pairs = sorted(
+            ((abs(pin_ys_c[i] - cyv), i, cyv)
+             for cyv in _band_runs(ix0, ix1, y0, y1)
+             for i in range(len(pin_ys_c))),
+        )
+        done_c: Set[int] = set()
+        for _dy, pidx, cyv in pairs:
+            if pidx in used or cyv in done_c:
+                continue
+            hit = _contact_edge(edge_lbl, skel_graph, ix0, cyv)
+            if hit is None:
+                continue
+            used.add(pidx); done_c.add(cyv)
+            old = refined.get((gid, "in", pidx))
+            if old is None or old[0] != hit[0]:
+                n_ref += 1
+                log.info("Contact-assign: %s.in[%d] → edge %d (was %s)",
+                         gid, pidx, hit[0], old)
+            refined[(gid, "in", pidx)] = hit
+
+        # ── output side ───────────────────────────────────────────────────
+        ox0 = min(w - 1, b["x"] + b["w"] + GATE_PAD)
+        ox1 = min(w, ox0 + 2)
+        out_y = centers["out"][0][1]
+        runs_o = _band_runs(ox0, ox1, y0, y1)
+        if runs_o:
+            cyv = min(runs_o, key=lambda v: abs(v - out_y))
+            hit = _contact_edge(edge_lbl, skel_graph, ox1 - 1, cyv)
+            if hit is not None:
+                old = refined.get((gid, "out", 0))
+                if old is None or old[0] != hit[0]:
+                    n_ref += 1
+                    log.info("Contact-assign: %s.out → edge %d (was %s)",
+                             gid, hit[0], old)
+                refined[(gid, "out", 0)] = hit
+
+    if n_ref:
+        log.info("Contact refinement: %d pin(s) re-assigned by boundary contact.",
+                 n_ref)
+    return refined
+
+
 # ── Stage 6: Post-correction (Pass 4) ─────────────────────────────────────────
 
 def post_correct_missing(
@@ -1352,6 +1478,7 @@ def build_nets(
         # and fusing separate input nets.
         binary:       Optional[np.ndarray] = None,
         boxes:        Optional[List[Dict]]  = None,
+        raw_binary:   Optional[np.ndarray] = None,
 ) -> Tuple[
     Dict[Tuple[str,str,int], int],
     Dict[int, List[Tuple[str,str,int]]],
@@ -2111,6 +2238,89 @@ def build_nets(
         if prim_frag_bridged:
             log.debug("Primary-input fragment merge: %d fragment(s) merged.",
                       prim_frag_bridged)
+
+        # ── Raw-ink evidence bridge ───────────────────────────────────────────
+        # MORPH_OPEN erases 1-px-wide wire segments entirely (e.g. a 113-px
+        # vertical connecting a gate's output run to the next gate's input
+        # run).  The fragments are far apart, so no proximity-based pass can
+        # bridge them safely.  But the ORIGINAL image is ground truth: if the
+        # straight line between two net endpoints is (a) almost fully inked
+        # in the RAW binarised image, (b) mostly ABSENT from the processed
+        # binary (i.e. genuinely deleted content, not a parallel route), and
+        # (c) does not pass through any gate bbox (gate bodies are ink in the
+        # raw image), then a wire was drawn there — merge the nets.
+        if raw_binary is not None and boxes is not None:
+            RAW_BRIDGE_MAX = 160    # px — max bridgeable deleted span
+            gate_rects_rb = [(max(0, b["x"] - GATE_PAD),
+                              max(0, b["y"] - GATE_PAD),
+                              b["x"] + b["w"] + GATE_PAD,
+                              b["y"] + b["h"] + GATE_PAD) for b in boxes]
+
+            def _net_len_rb(root: int) -> float:
+                return sum(_edge_euclidean_len(skel_graph.edges[e2])
+                           for e2 in range(n) if uf.find(e2) == root)
+
+            raw_bridged = 0
+            for i in range(n_ep):
+                ni_rb, xi_rb, yi_rb = ep_nodes[i]
+                ei_l = node_edgs.get(ni_rb, [])
+                if not ei_l:
+                    continue
+                for j in range(i + 1, n_ep):
+                    nj_rb, xj_rb, yj_rb = ep_nodes[j]
+                    ej_l = node_edgs.get(nj_rb, [])
+                    if not ej_l:
+                        continue
+                    ri_rb, rj_rb = uf.find(ei_l[0]), uf.find(ej_l[0])
+                    if ri_rb == rj_rb:
+                        continue
+                    dx_rb, dy_rb = xj_rb - xi_rb, yj_rb - yi_rb
+                    d2_rb = dx_rb * dx_rb + dy_rb * dy_rb
+                    if d2_rb < 18 * 18 or d2_rb > RAW_BRIDGE_MAX ** 2:
+                        continue   # short gaps belong to the earlier passes
+                    # both fragments must be real wires, not glyph strokes
+                    if _net_len_rb(ri_rb) < 15 or _net_len_rb(rj_rb) < 15:
+                        continue
+                    stps_rb = max(abs(dx_rb), abs(dy_rb))
+                    on_raw = on_proc = 0
+                    blocked = False
+                    for t_rb in range(stps_rb + 1):
+                        px_rb = int(round(xi_rb + dx_rb * t_rb / stps_rb))
+                        py_rb = int(round(yi_rb + dy_rb * t_rb / stps_rb))
+                        if not (0 <= py_rb < bh and 0 <= px_rb < bw):
+                            blocked = True; break
+                        if any(gx0 <= px_rb <= gx1 and gy0 <= py_rb <= gy1
+                               for (gx0, gy0, gx1, gy1) in gate_rects_rb):
+                            blocked = True; break
+                        # raw ink with 1-px Chebyshev tolerance (1-px wires
+                        # may sit a pixel off the ideal straight line)
+                        hit_rb = False
+                        for oy_rb in (-1, 0, 1):
+                            for ox_rb in (-1, 0, 1):
+                                qy_rb, qx_rb = py_rb + oy_rb, px_rb + ox_rb
+                                if (0 <= qy_rb < bh and 0 <= qx_rb < bw
+                                        and raw_binary[qy_rb, qx_rb] > 0):
+                                    hit_rb = True; break
+                            if hit_rb:
+                                break
+                        if hit_rb:
+                            on_raw += 1
+                        if binary[py_rb, px_rb] > 0:
+                            on_proc += 1
+                    if blocked:
+                        continue
+                    tot_rb = stps_rb + 1
+                    if on_raw >= 0.9 * tot_rb and on_proc <= 0.5 * tot_rb:
+                        uf.union(ei_l[0], ej_l[0])
+                        raw_bridged += 1
+                        log.info("RawInkBridge: (%d,%d)↔(%d,%d) d=%.0f "
+                                 "raw=%.0f%% proc=%.0f%% — deleted wire restored",
+                                 xi_rb, yi_rb, xj_rb, yj_rb, d2_rb ** 0.5,
+                                 100.0 * on_raw / tot_rb,
+                                 100.0 * on_proc / tot_rb)
+            if raw_bridged:
+                log.info("Raw-ink bridge: %d deleted wire segment(s) restored.",
+                         raw_bridged)
 
     edge_net = [uf.find(i) for i in range(n)]
 
@@ -3028,11 +3238,20 @@ def build_gate_graph(
             if s not in _ocr_used:
                 return s
 
-    def _net_path_px(nid: int) -> int:
-        """Total path pixels for all edges in this net."""
+    def _net_path_px(nid: int) -> float:
+        """Total wire length (px) of all edges in this net.
+
+        BUG FIX: this used to sum len(edge.path) — the number of RDP
+        polyline VERTICES, not pixels.  A straight 21-px input wire is 2 RDP
+        vertices, so it measured as "2 px": the MIN_PRIMARY_PIX filter
+        skipped every straight primary-input wire (forcing the rescue pass
+        to letter them) and the proximity-pass substantial-wire guards never
+        protected them (wide-proximity hijacked a NAND's C input with a gate
+        output 117 px away).  Euclidean length is what every caller intended.
+        """
         if skel_graph is None or net_edges is None:
-            return MIN_PRIMARY_PIX   # unknown → allow
-        return sum(len(skel_graph.edges[eid].path)
+            return float(MIN_PRIMARY_PIX)   # unknown → allow
+        return sum(_edge_euclidean_len(skel_graph.edges[eid])
                    for eid in net_edges.get(nid, []))
 
     all_nets = set(producers.keys()) | set(consumers.keys())
@@ -3219,6 +3438,12 @@ def build_gate_graph(
         _ox, _oy = gate_pin_centers(_b)['out'][0]
         _cx = _b['x'] + _b['w'] / 2.0
         _out_pin_pos[_b['id']] = (_ox, _oy, _cx)
+    # Nets consumed by at least one gate INPUT pin — used by the
+    # dangling-output rule below.
+    _consumed_nets_wp: Set[int] = {
+        _n_c for (_g_c, _s_c, _i_c), _n_c in (pin_nets or {}).items()
+        if _s_c == 'in'
+    }
 
     def _is_ancestor_wp(src: str, dst: str) -> bool:
         """True if dst is reachable FROM src in current pin_inputs (cycle check)."""
@@ -3254,9 +3479,12 @@ def build_gate_graph(
             # Two classes of "real" wires:
             #  (i)  InputConflict forced nets — always real (even if short RDP path)
             #  (ii) Non-demoted nets with substantial RDP path length (≥ MIN_PRIMARY_PIX)
+            _protected_wp = False
+            _pin_named_wp = False
             if isinstance(_existing, str) and _existing in global_inputs:
                 _in_nid_wp = (pin_nets or {}).get((_gid_dst, 'in', _pidx))
                 if _in_nid_wp is not None:
+                    _pin_named_wp = net_names.get(_in_nid_wp) is not None
                     _is_forced = (forced_primary_nets is not None and
                                   _in_nid_wp in forced_primary_nets)
                     if _is_forced:
@@ -3265,10 +3493,10 @@ def build_gate_graph(
                         # Half the primary floor: a short-but-real input wire
                         # (e.g. label C drawn close to its gate, wire ~22 units)
                         # must not be hijacked by a distant gate output 170+ px
-                        # away.  Only true residual stubs (< half floor) may be
-                        # overridden.
+                        # away.  A protected pin may still be re-linked below,
+                        # but ONLY to a DANGLING gate output (see there).
                         if _net_path_px(_in_nid_wp) >= MIN_PRIMARY_PIX // 2:
-                            continue  # substantial traced wire — preserve
+                            _protected_wp = True
 
             # Find nearest gate output within wide radius, strictly to the LEFT
             _best_d, _best_src = float('inf'), None
@@ -3285,6 +3513,22 @@ def build_gate_graph(
 
             if _best_src is None or _best_src not in gate_ids:
                 continue
+
+            # Dangling-output rule: a protected pin (substantial traced wire)
+            # may ONLY be re-linked to a source whose output currently drives
+            # NOTHING, and only when the pin's net carries no OCR name.  In a
+            # real circuit every gate output goes somewhere — a dangling
+            # output plus an unnamed orphan input wire within range are two
+            # halves of one broken wire (common on hand-drawn schematics
+            # whose strokes fragment).  A source that already has a consumer
+            # (e.g. the 6-NAND circuit's first NAND) must never steal a
+            # protected pin.
+            if _protected_wp:
+                _src_out_nid = (pin_nets or {}).get((_best_src, 'out', 0))
+                _src_dangling = (_src_out_nid is None
+                                 or _src_out_nid not in _consumed_nets_wp)
+                if _pin_named_wp or not _src_dangling:
+                    continue
 
             # Guard C: cycle check
             if _is_ancestor_wp(_gid_dst, _best_src):
@@ -3608,10 +3852,20 @@ def predict_circuit(
     log.info("=== Stage 6: Post-Correction (Pass 4) ===")
     assignment = post_correct_missing(boxes, skel_graph, assignment, binary)
 
+    # ── Stage 5.5: Contact-based pin refinement ───────────────────────────────
+    log.info("=== Stage 5.5: Contact Pin Refinement ===")
+    assignment = contact_refine_pins(boxes, skel_graph, binary, assignment)
+
     # ── Stage 7: Net construction (skeleton Union-Find) ───────────────────────
     log.info("=== Stage 7: Build Nets (skeleton UF) ===")
+    # Raw binarised image = ground-truth ink for the raw-ink evidence bridge
+    # (1-px wires that MORPH_OPEN deleted still exist here).
+    _gray_raw = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, raw_bin = cv2.threshold(_gray_raw, 0, 255,
+                               cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     pin_nets, net_pins, edge_net, net_edges = build_nets(
-        skel_graph, assignment, dot_centers=junc_dots, binary=binary, boxes=boxes)
+        skel_graph, assignment, dot_centers=junc_dots, binary=binary,
+        boxes=boxes, raw_binary=raw_bin)
 
     # ── Stage 7a: Split merged input buses ───────────────────────────────────
     log.info("=== Stage 7a: Bus Split ===")
