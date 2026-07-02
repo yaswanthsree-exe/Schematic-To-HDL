@@ -287,6 +287,46 @@ def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
 
     boxes = _yolo_boxes(img, model, YOLO_CONF)
 
+    # ── Domain-normalised second pass ─────────────────────────────────────────
+    # The detector is trained on black-on-white LINE-ART schematics.  Coloured
+    # web images (yellow-filled gates, watermarks, logos) are out of
+    # distribution: on a real test image every AND/OR came back as low-conf
+    # "XOR" and the site logo was detected as a gate.  Binarising to solid
+    # black shapes on white puts such images back inside the training domain
+    # (same image measured: AND 0.82/0.81, OR 0.74, logo gone).  Run the model
+    # on BOTH presentations and keep whichever it is more confident about —
+    # for already-B/W schematics the two are nearly identical, so corpus
+    # behaviour is unchanged.
+    def _mean_conf(bs):
+        return sum(b.get("conf", 0.0) for b in bs) / len(bs) if bs else 0.0
+
+    # Engage ONLY for out-of-domain images.  On in-domain B/W screenshots the
+    # Otsu rendering differs subtly from the original (anti-aliasing, gray
+    # levels), which nudges confidences and bbox coordinates enough to change
+    # downstream tracing — a corpus regression measured propagation 322→314
+    # when this pass ran unconditionally.  Trigger conditions:
+    # Trigger: the image is meaningfully COLOURED (saturated pixels ≥ 2%).
+    # A "weak detections" trigger was tried and reverted: many in-domain
+    # hand-drawn corpus images naturally have low confidences, so it fired
+    # broadly and shifted bboxes on images the model already handled
+    # (corpus propagation 322→315).  Colour is the actual out-of-domain
+    # signal — the training set is B/W line art.
+    hsv_dg = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    sat_frac = float(((hsv_dg[:, :, 1] > 60) & (hsv_dg[:, :, 2] > 60)).mean())
+    if sat_frac >= 0.02:
+        gray_dg = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, bw_dg = cv2.threshold(gray_dg, 0, 255,
+                                 cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        lineart_dg = cv2.cvtColor(255 - bw_dg, cv2.COLOR_GRAY2BGR)
+        boxes_la = _yolo_boxes(lineart_dg, model, YOLO_CONF)
+        if boxes_la and (_mean_conf(boxes_la) > _mean_conf(boxes) + 0.02):
+            log.info("Domain-normalised detection preferred "
+                     "(sat=%.2f): conf %.2f→%.2f, %d→%d gate(s).",
+                     sat_frac,
+                     _mean_conf(boxes), _mean_conf(boxes_la),
+                     len(boxes), len(boxes_la))
+            boxes = boxes_la
+
     # Adaptive retry: if fewer than 2 gates detected, try a lower confidence.
     # This helps with schematics where gates have weak activations (unusual scale,
     # rotation, or partial occlusion).  Only use the retry result if it finds MORE
@@ -2639,6 +2679,9 @@ def ocr_net_names(
                 text_threshold=0.4, low_text=0.25, link_threshold=0.2)
             ocr_res = [(b, t, c) for (b, t, c) in raw_retry
                        if c >= 0.6 and t.strip()
+                       and len(t.strip()) <= 6      # signal names are short;
+                       # rejects logo/watermark words ('Electronic') that sit
+                       # near a rail's bottom end and would steal its name
                        and t.strip()[0].isalpha()
                        and all(ch.isalnum() or ch == "_" for ch in t.strip())]
             if ocr_res:
@@ -2710,6 +2753,12 @@ def ocr_net_names(
             # ("C B A") or caption text ("Circuit Diagram") — never a
             # signal name.  Naming a net with it produces invalid
             # identifiers in the netlist.
+            continue
+        if len(text) > 6:
+            # Signal names in logic schematics are short (A, Cin, Carry,
+            # BORout).  Long words are captions, watermarks or logo text
+            # ('Electronic', 'Circuit', 'Diagram') that happen to sit within
+            # snap range of a rail's end and would steal its name.
             continue
         cx = sum(p[0] for p in bbox) / 4.0
         cy = sum(p[1] for p in bbox) / 4.0
@@ -3077,6 +3126,11 @@ def build_gate_graph(
             existing = pin_inputs.get(gid_dst, {}).get(pidx)
             if existing in gate_ids:
                 continue   # wire-traced gate connection — don't override
+            # One driver, one pin: a gate never drives two input pins of the
+            # same gate in a real schematic.  Without this, a nearby NOT could
+            # claim a second pin of the same AND (AND(G1, G1)).
+            if gid_src in pin_inputs.get(gid_dst, {}).values():
+                continue
             # Substantial-wire guard (same rule as the wide-proximity pass):
             # when the pin already carries a primary input traced over a real
             # wire, keep it.  Without this, a NOT gate sitting close to an
@@ -3215,6 +3269,11 @@ def build_gate_graph(
             if _is_ancestor_wp(_gid_dst, _best_src):
                 log.debug("Wide-proximity: skipping %s→%s.in[%d] — would create cycle",
                           _best_src, _gid_dst, _pidx)
+                continue
+
+            # One driver, one pin (same rule as the tight pass): never let a
+            # source gate claim a second input pin of the same destination.
+            if _best_src in pin_inputs.get(_gid_dst, {}).values():
                 continue
 
             # Apply the connection
