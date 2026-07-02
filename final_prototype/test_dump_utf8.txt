@@ -1,0 +1,8 @@
+﻿
+image 1/1 C:\Users\yaswa\.gemini\antigravity\scratch\schematic_to_netlist\final_prototype\test_crop.png: 640x448 1 AND, 1 OR, 32.3ms
+Speed: 1.5ms preprocess, 32.3ms inference, 0.7ms postprocess per image at shape (1, 3, 640, 448)
+Detected 2 gates:
+  OR (conf=0.84) at (278,142)
+  AND (conf=0.90) at (281,422)
+Gate Gate_1 (OR) inputs: [0 3]
+Gate Gate_0 (AND) inputs: [0 3]

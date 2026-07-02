@@ -1,0 +1,38 @@
+Loading model: runs\detect\runs\roboflow_gates\weights\best.pt
+
+==================================================
+STAGE 1: Detecting gates in kjbkjf.jpg
+==================================================
+
+image 1/1 C:\Users\yaswa\Downloads\kjbkjf.jpg: 224x640 5 NORs, 24.2ms
+Speed: 1.2ms preprocess, 24.2ms inference, 0.7ms postprocess per image at shape (1, 3, 224, 640)
+Detected 5 gates:
+  NOR (conf=0.80) at (73,69)
+  NOR (conf=0.80) at (235,0)
+  NOR (conf=0.77) at (236,140)
+  NOR (conf=0.72) at (403,69)
+  NOR (conf=0.81) at (575,68)
+
+==================================================
+STAGE 2: Tracing wires
+==================================================
+Found 19 wire segments
+
+==================================================
+STAGE 3: Building circuit graph
+==================================================
+Global inputs:  {'A', 'B'}
+Global outputs: set()
+
+==================================================
+STAGE 4: Generating netlist & equations
+==================================================
+
+==================================================
+RESULTS
+==================================================
+NETLIST:   G1 = NOR(A, B); G2 = NOR(A, G1); G3 = NOR(G1, B); G4 = NOR(G2, G3); G5 = NOR(G4); Q = G5
+EQUATION:  Q = (NOR(((A NOR (A NOR B)) NOR ((A NOR B) NOR B))))
+==================================================
+
+Annotated image saved to: C:\Users\yaswa\Downloads\kjbkjf_result.png

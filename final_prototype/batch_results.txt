@@ -1,0 +1,202 @@
+
+[OK 0.1s] full_half_adder/Screenshot 2026-03-26 223101.png
+  gates: [('XOR', 0.93), ('AND', 0.83), ('AND', 0.85), ('AND', 0.82), ('OR', 0.87)]
+  inputs: ['A']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = AND(A, A);
+    G2 = XOR(A, A);
+    assign OUT_2 = G2;
+    G3 = AND(A, A);
+    G4 = AND(A, A);
+    assign OUT_1 = G4;
+    G5 = OR(G1, G3);
+  warnings: []
+
+[OK 0.1s] full_half_adder/Screenshot 2026-03-26 223116.png
+  gates: [('XOR', 0.81), ('AND', 0.87), ('XOR', 0.94), ('AND', 0.85), ('OR', 0.85)]
+  inputs: ['A', 'B', 'C', 'D', 'E']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = AND(C, B);
+    G2 = XOR(A, B);
+    G3 = XOR(G2, D);
+    assign OUT_1 = G3;
+    G4 = AND(G2, E);
+    G5 = OR(G4, G1);
+    assign OUT_2 = G5;
+  warnings: []
+
+[OK 0.1s] full_half_adder/Screenshot 2026-03-26 223129.png
+  gates: [('XOR', 0.75), ('XOR', 0.61), ('OR', 0.37)]
+  inputs: ['A']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = XOR(A, A);
+    G2 = XOR(G1, G1);
+    assign OUT_2 = G2;
+    G3 = OR(G1, A);
+    assign OUT_1 = G3;
+  warnings: []
+
+[OK 0.1s] full_half_adder/Screenshot 2026-03-26 223224.png
+  gates: [('NOR', 0.5), ('NOR', 0.27), ('NOR', 0.34), ('NOR', 0.29), ('NOR', 0.79), ('NOR', 0.38), ('NOR', 0.38), ('OR', 0.55), ('NOR', 0.41)]
+  inputs: ['A', 'B', 'C', 'D']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = OR(C, C);
+    assign OUT_1 = G1;
+    G2 = NOR(A, A);
+    G3 = NOR(B);
+    G4 = NOR(G2);
+    G5 = NOR(G3, G4);
+    G6 = NOR(G5, D);
+    G7 = NOR(C, G6);
+    G8 = NOR(G6);
+    G9 = NOR(G8, G8);
+    assign OUT_2 = G9;
+  warnings: ['Gate_9 (NOR): only 1 input found (expected ≥2)', 'Gate_6 (NOR): only 1 input found (expected ≥2)', 'Gate_5 (NOR): only 1 input found (expected ≥2)']
+
+[OK 0.2s] full_half_adder/Screenshot 2026-03-26 223303.png
+  gates: [('AND', 0.87), ('AND', 0.91), ('AND', 0.89), ('XOR', 0.82), ('OR', 0.87), ('XOR', 0.76), ('OR', 0.83)]
+  inputs: ['A', 'B']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = XOR(A, A);
+    G2 = AND(A, A);
+    G3 = AND(A, A);
+    G4 = AND(A, A);
+    G5 = XOR(G1, B);
+    assign OUT_2 = G5;
+    G6 = OR(G2, G4);
+    G7 = OR(G6, G3);
+    assign OUT_1 = G7;
+  warnings: []
+
+[OK 0.1s] half_full_sub/Screenshot 2026-03-14 211200.png
+  gates: [('NOT', 0.84), ('NAND', 0.8), ('NOT', 0.76), ('AND', 0.84), ('OR', 0.86)]
+  inputs: ['A', 'B']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = NAND(A, B);
+    G2 = NOT(A);
+    G3 = NOT(B);
+    G4 = AND(B, G2);
+    assign OUT_2 = G4;
+    G5 = OR(G1, G3);
+    assign OUT_1 = G5;
+  warnings: []
+
+[OK 0.2s] half_full_sub/Screenshot 2026-03-26 224910.png
+  gates: [('NOT', 0.44), ('XOR', 0.87), ('AND', 0.87)]
+  inputs: ['A']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = NOT(A);
+    G2 = XOR(A, A);
+    assign OUT_2 = G2;
+    G3 = AND(G1, A);
+    assign OUT_1 = G3;
+  warnings: []
+
+[OK 0.1s] half_full_sub/Screenshot 2026-03-26 224918.png
+  gates: [('NOT', 0.61), ('XOR', 0.87), ('AND', 0.86), ('NOT', 0.8), ('XOR', 0.89), ('AND', 0.86), ('OR', 0.85)]
+  inputs: ['A', 'B', 'C']  outputs: ['OUT_1', 'OUT_2', 'OUT_3']
+  netlist:
+    G1 = NOT(A);
+    G2 = XOR(B, C);
+    assign OUT_2 = G2;
+    G3 = XOR(A, A);
+    assign OUT_1 = G3;
+    G4 = AND(C, C);
+    G5 = NOT(C);
+    G6 = AND(G1, A);
+    G7 = OR(G6, G4);
+    assign OUT_3 = G7;
+  warnings: []
+
+[OK 0.1s] half_full_sub/Screenshot 2026-03-26 225002.png
+  gates: [('NOT', 0.84), ('AND', 0.27), ('AND', 0.84), ('AND', 0.8), ('XOR', 0.86), ('XOR', 0.27), ('OR', 0.83)]
+  inputs: ['A', 'B', 'C', 'D']  outputs: ['OUT_1', 'OUT_2', 'OUT_3', 'OUT_4']
+  netlist:
+    G1 = XOR(C, B);
+    assign OUT_2 = G1;
+    G2 = NOT(A);
+    G3 = AND(B, C);
+    assign OUT_1 = G3;
+    G4 = XOR(UNCONNECTED);
+    G5 = AND(C, G2);
+    G6 = AND(G2, B);
+    assign OUT_3 = G6;
+    G7 = OR(D, G5);
+    assign OUT_4 = G7;
+  warnings: ['Gate_6 (XOR): no inputs detected']
+
+[OK 0.1s] half_full_sub/Screenshot 2026-03-26 225017.png
+  gates: [('NOT', 0.86), ('XOR', 0.77), ('AND', 0.82), ('AND', 0.87), ('XOR', 0.88), ('OR', 0.84)]
+  inputs: ['A', 'B']  outputs: ['OUT_1', 'OUT_2', 'OUT_3', 'OUT_4']
+  netlist:
+    G1 = XOR(A, A);
+    assign OUT_2 = G1;
+    G2 = OR(UNCONNECTED);
+    assign OUT_1 = G2;
+    G3 = AND(B, B);
+    G4 = XOR(B, B);
+    assign OUT_4 = G4;
+    G5 = NOT(B);
+    G6 = AND(G5, G5);
+    assign OUT_3 = G6;
+  warnings: ['Gate_3 (OR): no inputs detected']
+
+[OK 0.5s] random/Screenshot 2026-03-05 213814.png
+  gates: [('OR', 0.77), ('NAND', 0.86), ('AND', 0.71)]
+  inputs: ['A', 'B']  outputs: ['OUT_1']
+  netlist:
+    G1 = NAND(A, B);
+    G2 = OR(A, B);
+    G3 = AND(G2, G1);
+    assign OUT_1 = G3;
+  warnings: []
+
+[OK 0.1s] random/Screenshot 2026-03-14 205506.png
+  gates: [('NOT', 0.87), ('NOT', 0.84), ('NAND', 0.79), ('AND', 0.86), ('OR', 0.86)]
+  inputs: ['A', 'B']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = NOT(B);
+    G2 = NOT(A);
+    G3 = NAND(A, B);
+    G4 = AND(B, G2);
+    assign OUT_2 = G4;
+    G5 = OR(G3, G1);
+    assign OUT_1 = G5;
+  warnings: []
+
+[OK 0.1s] random/Screenshot 2026-03-14 213402.png
+  gates: [('NOT', 0.84), ('NAND', 0.84), ('NOT', 0.79), ('AND', 0.89), ('OR', 0.86)]
+  inputs: ['A', 'B']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = NAND(A, B);
+    G2 = NOT(A);
+    G3 = NOT(B);
+    G4 = AND(B, G2);
+    assign OUT_2 = G4;
+    G5 = OR(G1, G3);
+    assign OUT_1 = G5;
+  warnings: []
+
+[OK 0.1s] random/Screenshot 2026-03-26 231629.png
+  gates: [('AND', 0.81), ('OR', 0.82), ('AND', 0.85), ('OR', 0.8)]
+  inputs: ['A', 'B', 'C', 'D', 'E', 'F']  outputs: ['OUT_1', 'OUT_2']
+  netlist:
+    G1 = AND(A, B);
+    G2 = OR(D, F);
+    G3 = OR(G1, C);
+    assign OUT_1 = G3;
+    G4 = AND(E, G2);
+    assign OUT_2 = G4;
+  warnings: []
+
+[OK 0.1s] random/Screenshot 2026-03-26 231715.png
+  gates: [('NOT', 0.86), ('NOT', 0.86), ('AND', 0.8), ('AND', 0.7), ('OR', 0.73)]
+  inputs: ['A', 'B']  outputs: ['OUT_1']
+  netlist:
+    G1 = NOT(B);
+    G2 = NOT(A);
+    G3 = AND(A, B);
+    G4 = AND(G2, G1);
+    G5 = OR(G4, G3);
+    assign OUT_1 = G5;
+  warnings: []

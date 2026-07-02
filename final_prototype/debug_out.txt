@@ -1,0 +1,5 @@
+Inputs: {'A'}
+
+Graph:
+Gate_1: {'cls': 'OR', 'inputs': ['A'], 'outputs': []}
+Gate_0: {'cls': 'AND', 'inputs': ['A'], 'outputs': []}

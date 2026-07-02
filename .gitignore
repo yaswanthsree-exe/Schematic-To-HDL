@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+
+# Large model weights — keep out of git (backed up separately in
+# BACKUP_WORKING_02jul2026_full_pipeline/ and the .zip)
+*.pt
+*.pth
+*.zip
+
+# Debug output & scratch
+debug_intermediates/
+debug_out/
+_dbg_*/
+production_v2/_*.py
+production_v2/_*.txt
+production_v2/_*.log
+production_v2/_*.png
+*.log
+nohup.out
+
+# Datasets (large, static)
+Digital_train_data/
+custom_dataset/
+dataset/
+final_dataset_hdl/
+internet_dataset/
+internet_images/
+reference_library/
+final_prototype/runs/
+final_prototype/Digital_train_data/
+
+# Manual backup folders (git history is the backup going forward)
+BACKUP_WORKING_*/
+production_v2_backup_*/
+production_v1/
+
+# Session scratch
+_imgserve.py
+_verver.py
