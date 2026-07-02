@@ -2087,6 +2087,13 @@ def build_nets(
                     #      1-px branch's top — a REAL connection; allow.
                     #  (b) longer blank span: two separate wires whose label
                     #      ink remnants sit near each other; block.
+                    # NOTE: relaxing this (16-px gaps, clean-gap tolerance,
+                    # direction-aligned bridging) was tried for the
+                    # labels-drawn-on-wires style and reverted: the label
+                    # glyph acts as a hub and chains unrelated fragments
+                    # through it no matter which single geometric guard is
+                    # added.  That style needs glyph removal or model
+                    # retraining, not looser bridging.
                     if d2_pf > 12 * 12:
                         ok_pf = False
 
@@ -3107,8 +3114,22 @@ def build_gate_graph(
                 continue
             if pidx in pin_inputs.get(gid, {}):
                 continue   # already resolved
-            # This pin was skipped (tiny/unforceable net); rescue it
             ocr_rescue = net_names.get(nid)
+            # Phantom-pin prune: on labels-drawn-on-wires schematics, a label
+            # glyph stroke next to the gate (e.g. the OVERBAR of "B̄") gets
+            # counted as an extra input stub by fan-in detection.  Its net is
+            # a tiny isolated stroke: single pin, no OCR name, no producer.
+            # If the gate ALREADY has its full complement of resolved inputs,
+            # drop the pin instead of inventing a phantom letter for it.
+            if (not ocr_rescue
+                    and _net_path_px(nid) < MIN_PRIMARY_PIX
+                    and len(pin_inputs.get(gid, {}))
+                        >= GATE_N_IN.get(cls_of.get(gid, ""), 2)):
+                log.info("Phantom-pin prune: %s.in[%d] (net %d, tiny isolated "
+                         "stroke) dropped — gate already has %d inputs",
+                         gid, pidx, nid, len(pin_inputs[gid]))
+                continue
+            # This pin was skipped (tiny/unforceable net); rescue it
             name_rescue = ocr_rescue if ocr_rescue else _next_letter()
             pin_inputs[gid][pidx] = name_rescue
             if not ocr_rescue:
