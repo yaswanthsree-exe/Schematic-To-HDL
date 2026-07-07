@@ -38,3 +38,9 @@ production_v1/
 # Session scratch
 _imgserve.py
 _verver.py
+
+# External-tool test scaffolding (Manus AI bundle test dirs — not part of
+# the pipeline, safe to delete anytime)
+manus_pro_test/
+manus_v2_test/
+_manus_test/
