@@ -8,6 +8,18 @@ image variety (clean line-art, hand-drawn, scanned/tinted, colored/watermarked
 web images) — not just the training corpus.
 
 ## Repo / environment
+- **Working directory (2026-07-06 onward):**
+  `C:\Yaswanth\Yash\Schematic To Netlist Part 1 Working Final\` — consolidated
+  folder containing ONLY what the pipeline needs: `.git` (full history +
+  GitHub remote, moved intact), `production_v2/`, `Digital_train_data/`
+  (test corpus), `production_v2_backup_31may/` (regression baseline),
+  `BACKUP_WORKING_02jul2026_full_pipeline/` + `.zip` (manual backup),
+  `models/best.pt` + `newmodel.pth` (model weights), the two
+  `20-combinational_circuit*.png` benchmark images, and this file.
+  The old `C:\Yaswanth\Yash\schematic_to_netlist_backupexp\` now holds only
+  legacy/training-era material (dataset folders, `final_prototype/`, old
+  data-generation scripts) — none of it is tracked by git anymore and none
+  of it is needed to run or maintain the pipeline.
 - GitHub (private): https://github.com/yaswanthsree-exe/Schematic-To-Netlist-Generation
 - Core pipeline: `production_v2/predict.py` (single file, ~10 stages: YOLO gate
   detection → CNN reclassify → preprocess/erase → skeletonize → skeleton graph
