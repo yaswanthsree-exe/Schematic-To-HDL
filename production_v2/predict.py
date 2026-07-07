@@ -2895,9 +2895,23 @@ def ocr_net_names(
             # slip under EasyOCR's default text/link thresholds on clean
             # synthetic schematics.  Retry once with permissive thresholds
             # and 2× magnification; fires ONLY when the standard pass found
-            # nothing, so images that already OCR fine are unaffected.
-            # Permissive results are noisy ('4', '1', 'DoY' garbage at low
-            # conf), so keep only confident alphanumeric-identifier reads.
+            # NOTHING AT ALL.
+            #
+            # A "merge in whatever the permissive pass adds on TOP OF a
+            # partially-successful standard pass" variant was tried (to
+            # recover labels missed on a scanned/tinted image where the
+            # standard pass found some but not all letters) and reverted:
+            # on a small gate (e.g. NOT), input and output stubs sit only a
+            # few px apart, and the permissive pass's slightly different
+            # detection geometry can snap a genuine label to the WRONG
+            # (nearer) stub — it turned a benchmark's correctly
+            # auto-lettered inputs (via lucky net-processing-order fallback)
+            # into confidently-WRONG OCR names for the gate's output net
+            # instead of its input net.  Zero-result-gated retry avoids ever
+            # touching an image where the standard pass already got
+            # something right.  Permissive results are noisy ('4', '1',
+            # 'DoY' garbage at low conf), so keep only confident
+            # alphanumeric-identifier reads.
             raw_retry = _OCR_READER.readtext(
                 img, detail=1, paragraph=False, mag_ratio=2.0,
                 text_threshold=0.4, low_text=0.25, link_threshold=0.2)
