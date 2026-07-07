@@ -305,15 +305,22 @@ def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
     # levels), which nudges confidences and bbox coordinates enough to change
     # downstream tracing — a corpus regression measured propagation 322→314
     # when this pass ran unconditionally.  Trigger conditions:
-    # Trigger: the image is meaningfully COLOURED (saturated pixels ≥ 2%).
-    # A "weak detections" trigger was tried and reverted: many in-domain
-    # hand-drawn corpus images naturally have low confidences, so it fired
-    # broadly and shifted bboxes on images the model already handled
-    # (corpus propagation 322→315).  Colour is the actual out-of-domain
-    # signal — the training set is B/W line art.
+    # Trigger: the image is meaningfully COLOURED (saturated pixels ≥ 2%) OR
+    # has a TINTED/GRAY background (scanned textbook pages, gray-filled gate
+    # bodies).  A "weak detections" trigger was tried and reverted: many
+    # in-domain hand-drawn corpus images naturally have low confidences, so
+    # it fired broadly and shifted bboxes on images the model already
+    # handled (corpus propagation 322→315).  Colour/tint is the actual
+    # out-of-domain signal — the training set is white-paper B/W line art.
+    # Measured: a gray-tinted textbook scan has sat_frac=0.000 (gray has no
+    # saturation) but modal background gray=232, vs >=245 for genuine
+    # white-paper corpus images — that gap is the real signal for this case.
     hsv_dg = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     sat_frac = float(((hsv_dg[:, :, 1] > 60) & (hsv_dg[:, :, 2] > 60)).mean())
-    if sat_frac >= 0.02:
+    gray_bg_dg = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _bg_bins_dg = np.bincount((gray_bg_dg.reshape(-1) >> 4), minlength=16)
+    modal_bg_gray_dg = int(_bg_bins_dg.argmax()) * 16 + 8
+    if sat_frac >= 0.02 or modal_bg_gray_dg < 240:
         gray_dg = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, bw_dg = cv2.threshold(gray_dg, 0, 255,
                                  cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
@@ -321,8 +328,8 @@ def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
         boxes_la = _yolo_boxes(lineart_dg, model, YOLO_CONF)
         if boxes_la and (_mean_conf(boxes_la) > _mean_conf(boxes) + 0.02):
             log.info("Domain-normalised detection preferred "
-                     "(sat=%.2f): conf %.2f→%.2f, %d→%d gate(s).",
-                     sat_frac,
+                     "(sat=%.2f bg_gray=%d): conf %.2f→%.2f, %d→%d gate(s).",
+                     sat_frac, modal_bg_gray_dg,
                      _mean_conf(boxes), _mean_conf(boxes_la),
                      len(boxes), len(boxes_la))
             boxes = boxes_la
@@ -3515,20 +3522,23 @@ def build_gate_graph(
                 continue
 
             # Dangling-output rule: a protected pin (substantial traced wire)
-            # may ONLY be re-linked to a source whose output currently drives
-            # NOTHING, and only when the pin's net carries no OCR name.  In a
-            # real circuit every gate output goes somewhere — a dangling
-            # output plus an unnamed orphan input wire within range are two
-            # halves of one broken wire (common on hand-drawn schematics
-            # whose strokes fragment).  A source that already has a consumer
-            # (e.g. the 6-NAND circuit's first NAND) must never steal a
-            # protected pin.
+            # is NEVER overridden — full stop.  An earlier version allowed
+            # re-linking a protected pin when the candidate source's output
+            # was "dangling" (no consumer), on the theory that a dangling
+            # output + an unnamed orphan input are two halves of one broken
+            # wire.  That is unsound: a gate's LEGITIMATE FINAL circuit
+            # output (e.g. the Sum XOR of a full adder) is ALSO "dangling" by
+            # definition — nothing downstream consumes it — so the escape
+            # hatch was indistinguishable from "this is just the answer" and
+            # actively hijacked a real, already-traced input wire into a
+            # nearby gate's pin (full-adder benchmark: XOR's Sum output stole
+            # AND's real 'A' input pin, corrupting the whole circuit).  A
+            # truly broken wire is protected only if its OWN traced length
+            # already clears the substantial-wire floor, which is a
+            # contradiction (a broken fragment is short) — so no legitimate
+            # broken-wire case actually needs this override.
             if _protected_wp:
-                _src_out_nid = (pin_nets or {}).get((_best_src, 'out', 0))
-                _src_dangling = (_src_out_nid is None
-                                 or _src_out_nid not in _consumed_nets_wp)
-                if _pin_named_wp or not _src_dangling:
-                    continue
+                continue
 
             # Guard C: cycle check
             if _is_ancestor_wp(_gid_dst, _best_src):
