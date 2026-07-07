@@ -1,6 +1,0 @@
-path: C:/Users/yaswa/.gemini/antigravity/scratch/schematic_to_netlist/internet_dataset
-train: images/train
-val: images/train
-
-nc: 8
-names: ['AND', 'BUFFER', 'NAND', 'NOR', 'NOT', 'OR', 'XNOR', 'XOR']
