@@ -1,5 +1,29 @@
 # Schematic-to-Netlist AI — Progress & Aim
 
+## ⚑ INTEGRATION STATUS (2026-07-07) — Part 1 + Part 2 DONE
+This folder (`C:\Yaswanth\Yash\Integration Prototype\`) is on git branch
+**`integration`** (main = Part-1-only, untouched). Full pipeline working
+end-to-end and verified live in the browser:
+**image → gate netlist + Boolean equations → synthesizable HDL + IC bill-of-materials.**
+
+- Part 2 engine: `production_v2/hdl_gen/graph_to_hdl.py` — converts predict.py's
+  logical gate graph directly to: behavioral Verilog, structural Verilog
+  (2-input primitives, n-ary gates decomposed to gate chains), behavioral VHDL,
+  exhaustive Verilog testbench, and a 7400/4000-series physical IC BOM.
+- Integrated UI: `production_v2/app_final.py` (Streamlit, port 8501). Run it,
+  NOT app.py, for the full image→HDL experience. `app.py` is still the
+  netlist-only Part-1 app.
+- `hdl_gen/schematic_hdl_generator.py` = reference asset only (tested IC pin DB
+  from the Ic-HDL-Generator-UI repo). NOT used — its wire→component matching is
+  by IC *type*, so 2+ gates of one type collide onto one net (breaks every
+  multi-gate circuit). graph_to_hdl avoids this by driving from the logical graph.
+- Verification: the generated STRUCTURAL netlist was simulated in Python across
+  all input combinations and equals the pipeline's verified equations for full
+  adder, AND-NOT-AND, 20-combinational, 6-NAND (64 vectors). Functionally proven.
+- Commit `01809d5` on branch `integration`, pushed.
+- Deps added this session: `jinja2` (already had), `pytest`, `sqlalchemy` (only
+  needed to run the reference repo's own tests; NOT needed by graph_to_hdl).
+
 ## Aim
 Commercial-grade pipeline: upload a digital logic schematic image → correct
 gate-level netlist + Boolean equations. Must be **accurate** (exact gate types,
