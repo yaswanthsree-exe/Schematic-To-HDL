@@ -2,10 +2,13 @@
 __pycache__/
 *.pyc
 
-# Large model weights — keep out of git (backed up separately in
-# BACKUP_WORKING_02jul2026_full_pipeline/ and the .zip)
+# Large model weights — ignored by default, EXCEPT the two canonical
+# copies the app actually loads (needed so a fresh clone / hosting
+# platform has working weights without a separate download step).
 *.pt
 *.pth
+!models/best.pt
+!newmodel.pth
 *.zip
 
 # Debug output & scratch

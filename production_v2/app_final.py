@@ -19,6 +19,34 @@ st.set_page_config(page_title="Schematic → Netlist → HDL",
                    page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
 
+# ── Access gate ────────────────────────────────────────────────────────────
+# Private-by-link: the app only renders when the URL includes the correct
+# ?key=... query parameter. No login, no public listing — works the same
+# regardless of which host serves this (Streamlit Cloud / Render / etc.),
+# so privacy isn't tied to a platform-specific setting.
+#
+# Set the real secret in Streamlit Cloud's "Secrets" panel as:
+#   ACCESS_KEY = "your-long-random-string"
+# Locally, set the ACCESS_KEY environment variable, or edit the fallback
+# default below for quick local testing only — never commit a real secret.
+try:
+    _ACCESS_KEY = st.secrets.get("ACCESS_KEY", "") or os.environ.get("ACCESS_KEY", "")
+except Exception:
+    # No secrets.toml at all (e.g. fresh local checkout) — fall back to env var.
+    _ACCESS_KEY = os.environ.get("ACCESS_KEY", "")
+if _ACCESS_KEY:
+    if st.query_params.get("key") != _ACCESS_KEY:
+        st.markdown("""
+        <div style="display:flex;align-items:center;justify-content:center;
+                    height:80vh;font-family:sans-serif;">
+          <div style="text-align:center;">
+            <h2>🔒 Private link required</h2>
+            <p style="opacity:.7">This app is only accessible with a valid access link.</p>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
 st.markdown("""
 <style>
   .stApp { background-color: #0E1117; color: #FAFAFA; }
