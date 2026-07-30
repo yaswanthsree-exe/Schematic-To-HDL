@@ -14,6 +14,7 @@ from ultralytics import YOLO
 from predict import (CircuitResult, find_best_model, predict_circuit,
                      find_gate_classifier, load_gate_classifier)
 from hdl_gen import generate_all
+from pattern_engine import compress
 
 st.set_page_config(page_title="Schematic → Netlist → HDL",
                    page_icon="⚡", layout="wide",
@@ -153,8 +154,24 @@ if not result.graph:
         os.remove(tmp_path)
     st.stop()
 
+# ── Stage 2.5: functional pattern recognition ────────────────────────────────
+with st.spinner("Recognizing functional blocks…"):
+    compression = compress(result.graph)
+
+if compression.matches:
+    st.info(f"🧩 Recognized **{len(compression.matches)}** functional block(s)")
+    st.table([
+        {"Block": m.cls, "Pattern": m.pattern, "Level": m.level,
+         "Absorbed gates": ", ".join(m.absorbed)}
+        for m in compression.matches
+    ])
+else:
+    st.caption("No higher-level functional blocks recognized — "
+               "emitting gate-level HDL.")
+
 mod_name = os.path.splitext(uploaded.name)[0]
-hdl = generate_all(result.graph, result.global_inputs, result.global_outputs, mod_name)
+hdl = generate_all(compression.graph, result.global_inputs,
+                   result.global_outputs, mod_name)
 
 st.success(f"Generated HDL for module **{hdl['module_name']}** — "
            f"{hdl['total_gates']} gate(s) → **{hdl['total_packages']}** physical IC(s)")

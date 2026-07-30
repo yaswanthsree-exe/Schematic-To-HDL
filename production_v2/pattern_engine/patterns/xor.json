@@ -1,0 +1,29 @@
+{
+  "name":  "xor_and_or_not",
+  "cls":   "XOR",
+  "level": 1,
+  "nodes": {
+    "n1": "NOT",
+    "n2": "NOT",
+    "n3": "AND",
+    "n4": "AND",
+    "n5": "OR"
+  },
+  "edges": [
+    {"from": "n2", "to": "n3", "pins": [1]},
+    {"from": "n1", "to": "n4", "pins": [0]},
+    {"from": "n3", "to": "n5", "pins": [0]},
+    {"from": "n4", "to": "n5", "pins": [1]}
+  ],
+  "ports": {
+    "inputs": [
+      {"name": "A", "attach": [["n1", 0], ["n3", 0]]},
+      {"name": "B", "attach": [["n2", 0], ["n4", 1]]}
+    ],
+    "outputs": [
+      {"name": "Y", "node": "n5"}
+    ]
+  },
+  "validator": "truth_table",
+  "expected":  "0110"
+}

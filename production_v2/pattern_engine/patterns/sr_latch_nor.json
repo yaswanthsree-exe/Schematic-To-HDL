@@ -1,0 +1,24 @@
+{
+  "name":  "sr_latch_nor",
+  "cls":   "SRLATCH",
+  "level": 1,
+  "nodes": {
+    "n1": "NOR",
+    "n2": "NOR"
+  },
+  "edges": [
+    {"from": "n1", "to": "n2", "pins": [1]},
+    {"from": "n2", "to": "n1", "pins": [1]}
+  ],
+  "ports": {
+    "inputs": [
+      {"name": "R", "attach": [["n1", 0]]},
+      {"name": "S", "attach": [["n2", 0]]}
+    ],
+    "outputs": [
+      {"name": "Q",    "node": "n1"},
+      {"name": "Qbar", "node": "n2"}
+    ]
+  },
+  "validator": "sr_latch_nor"
+}

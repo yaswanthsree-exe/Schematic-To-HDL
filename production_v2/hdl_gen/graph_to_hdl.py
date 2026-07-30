@@ -43,6 +43,88 @@ _OP: Dict[str, Tuple[Optional[str], bool, bool]] = {
     "BUF":  (None, False, True),
 }
 
+#: Public alias.  pattern_engine.evaluator imports this so the simulator can
+#: never drift from what the HDL generator actually emits.
+GATE_SEMANTICS = _OP
+
+
+class UnknownGateClass(Exception):
+    """A gate class with neither known semantics nor a macro emitter.
+
+    Previously _OP.get(cls, ("&", False, False)) silently turned any unknown
+    class into an AND gate, which would have made macro nodes emit wrong HDL
+    with no error at all.
+    """
+
+
+def _srlatch_operands(inst, gid: str):
+    """Resolve (R_wire, S_wire, Q_signal, Qbar_signal) for a SRLATCH node."""
+    args = inst._args(gid)
+    if len(args) < 2:
+        raise UnknownGateClass(
+            f"SRLATCH {gid!r} needs 2 inputs, got {len(args)}")
+    names = list(inst.graph[gid].get("ports", {}).get("inputs", {}))
+    r = args[names.index("R")] if "R" in names else args[0]
+    s = args[names.index("S")] if "S" in names else args[1]
+    q = inst.wname[gid]
+    return r, s, q, f"{q}_n"
+
+
+def _emit_srlatch_verilog(inst, gid: str) -> list:
+    """Behavioral Verilog for a cross-coupled NOR SR latch."""
+    r, s, q, qb = _srlatch_operands(inst, gid)
+    return [
+        f"    // SRLATCH {gid}",
+        f"    assign {q}  = ~({r} | {qb});",
+        f"    assign {qb} = ~({s} | {q});",
+    ]
+
+
+def _emit_srlatch_vhdl(inst, gid: str) -> list:
+    """Behavioral VHDL for a cross-coupled NOR SR latch."""
+    r, s, q, qb = _srlatch_operands(inst, gid)
+    return [
+        f"    -- SRLATCH {gid}",
+        f"    {q}  <= not ({r} or {qb});",
+        f"    {qb} <= not ({s} or {q});",
+    ]
+
+
+#: cls -> emitter(generator_instance, gate_id) -> list[str] of HDL lines.
+#: Every macro class MUST appear in BOTH tables, because generate_all always
+#: produces Verilog and VHDL — a class present in only one would make
+#: generate_all raise for any circuit containing it.
+_MACRO_EMIT = {"SRLATCH": _emit_srlatch_verilog}
+_MACRO_EMIT_VHDL = {"SRLATCH": _emit_srlatch_vhdl}
+
+#: cls -> {pattern output port: suffix on the macro's base wire name}.
+#: A macro drives more than one signal, but the graph contract names a gate's
+#: output by gate id alone.  Without this, every output port of a macro
+#: resolves to the same wire and a latch emits Q == Qbar.
+_MACRO_OUTPUT_SUFFIX = {"SRLATCH": {"Q": "", "Qbar": "_n"}}
+
+
+def _macro_extra_signals(inst) -> list:
+    """The auxiliary `_n` signal each macro needs, in topological order."""
+    return [f"{inst.wname[g]}_n" for g in inst.order
+            if inst.graph[g]["cls"] in _MACRO_EMIT]
+
+
+def flatten(graph):
+    """Expand every macro node back into the gates it absorbed.
+
+    Structural Verilog and the IC BOM describe physical gates, so they run on
+    the flattened graph.  Identity on a graph with no macros.
+    """
+    out = {}
+    for gid, node in graph.items():
+        children = node.get("children")
+        if children:
+            out.update(flatten(children))
+        else:
+            out[gid] = node
+    return out
+
 # cls -> (part number, human description, gates per physical package)
 _IC: Dict[str, Tuple[str, str, int]] = {
     "AND":  ("7408",  "Quad 2-input AND",  4),
@@ -145,6 +227,38 @@ class GraphHDLGenerator:
         for gid in self.order:
             for out in self.graph[gid].get("outputs", []):
                 self.producer[_ident(out)] = gid
+        # primary output -> driving signal, for macros that drive several
+        self.osignal: Dict[str, str] = {}
+        for gid in self.order:
+            node = self.graph[gid]
+            suffix = _MACRO_OUTPUT_SUFFIX.get(node["cls"])
+            if not suffix:
+                continue
+            children = node.get("children", {})
+            for port, child in node.get("ports", {}).get("outputs", {}).items():
+                for net in children.get(child, {}).get("outputs", []):
+                    self.osignal[_ident(net)] = \
+                        self.wname[gid] + suffix.get(port, "")
+
+    def _out_signal(self, out: str) -> Optional[str]:
+        """The signal driving primary output *out*, or None if undriven.
+
+        When *no* declared output has a producer, fall back to the last gate in
+        topological order.  predict.generate_netlist synthesises a 'Q' output on
+        exactly that gate and merges it into global_outputs, but never writes it
+        into graph[gid]["outputs"] — so without this the output is emitted as a
+        constant and the circuit ships with a dead port.  Deliberately narrow: a
+        partially-driven circuit is left alone rather than have a driver guessed
+        for it, which would invent connectivity that was never traced.
+        """
+        if out in self.osignal:
+            return self.osignal[out]
+        gid = self.producer.get(out)
+        if gid:
+            return self.wname[gid]
+        if not self.producer and self.order:
+            return self.wname[self.order[-1]]
+        return None
 
     # -- resolved input wires for a gate --------------------------------------
     def _args(self, gid: str) -> List[str]:
@@ -167,9 +281,20 @@ class GraphHDLGenerator:
         if wires:
             L.append("    wire " + ", ".join(wires) + ";")
             L.append("")
+        extra = _macro_extra_signals(self)
+        if extra:
+            L.append("    wire " + ", ".join(extra) + ";")
+            L.append("")
         for gid in self.order:
             cls = self.graph[gid]["cls"]
-            op, inv, unary = _OP.get(cls, ("&", False, False))
+            if cls in _MACRO_EMIT:
+                L.extend(_MACRO_EMIT[cls](self, gid))
+                continue
+            if cls not in _OP:
+                raise UnknownGateClass(
+                    f"gate {gid!r} has class {cls!r}: no semantics and no "
+                    f"macro emitter")
+            op, inv, unary = _OP[cls]
             args = self._args(gid)
             if not args:
                 rhs = "1'b0"
@@ -181,8 +306,7 @@ class GraphHDLGenerator:
             L.append(f"    assign {self.wname[gid]} = {rhs};   // {cls}")
         L.append("")
         for out in self.outputs:
-            gid = self.producer.get(out)
-            src = self.wname[gid] if gid else "1'b0"
+            src = self._out_signal(out) or "1'b0"
             L.append(f"    assign {out} = {src};")
         L.append("")
         L.append("endmodule")
@@ -223,8 +347,7 @@ class GraphHDLGenerator:
         L.extend(body)
         L.append("")
         for out in self.outputs:
-            gid = self.producer.get(out)
-            src = self.wname[gid] if gid else "1'b0"
+            src = self._out_signal(out) or "1'b0"
             L.append(f"    assign {out} = {src};")
         L.append("")
         L.append("endmodule")
@@ -268,13 +391,20 @@ class GraphHDLGenerator:
         L.append(f"end {self.module};")
         L.append("")
         L.append(f"architecture behavioral of {self.module} is")
-        sigs = [self.wname[g] for g in self.order]
+        sigs = [self.wname[g] for g in self.order] + _macro_extra_signals(self)
         if sigs:
             L.append("    signal " + ", ".join(sigs) + " : std_logic;")
         L.append("begin")
         for gid in self.order:
             cls = self.graph[gid]["cls"]
-            op, inv, unary = _OP.get(cls, ("&", False, False))
+            if cls in _MACRO_EMIT_VHDL:
+                L.extend(_MACRO_EMIT_VHDL[cls](self, gid))
+                continue
+            if cls not in _OP:
+                raise UnknownGateClass(
+                    f"gate {gid!r} has class {cls!r}: no semantics and no "
+                    f"VHDL macro emitter")
+            op, inv, unary = _OP[cls]
             args = self._args(gid)
             if not args:
                 rhs = "'0'"
@@ -285,8 +415,7 @@ class GraphHDLGenerator:
                 rhs = f"not ({joined})" if inv else f"({joined})"
             L.append(f"    {self.wname[gid]} <= {rhs};  -- {cls}")
         for out in self.outputs:
-            gid = self.producer.get(out)
-            src = self.wname[gid] if gid else "'0'"
+            src = self._out_signal(out) or "'0'"
             L.append(f"    {out} <= {src};")
         L.append("end behavioral;")
         return "\n".join(L)
@@ -352,16 +481,24 @@ class GraphHDLGenerator:
 
 def generate_all(graph, global_inputs, global_outputs,
                  module_name: str = "circuit") -> Dict[str, Any]:
-    """One-shot: return every HDL artifact for a gate graph."""
+    """One-shot: return every HDL artifact for a gate graph.
+
+    Behavioral output uses the graph as given, so recognized macros appear as
+    macros.  Structural output and the IC BOM describe physical gates, so they
+    use the flattened graph.
+    """
     g = GraphHDLGenerator(graph, global_inputs, global_outputs, module_name)
-    bom = g.ic_bom()
+    flat = GraphHDLGenerator(flatten(graph), global_inputs, global_outputs,
+                             module_name)
+    bom = flat.ic_bom()
     return {
         "module_name": g.module,
         "verilog_behavioral": g.verilog_behavioral(),
-        "verilog_structural": g.verilog_structural(),
+        "verilog_structural": flat.verilog_structural(),
         "vhdl": g.vhdl_behavioral(),
         "testbench": g.testbench(),
         "ic_bom": bom,
         "total_gates": len(g.order),
+        "total_physical_gates": len(flat.order),
         "total_packages": sum(b["packages"] for b in bom),
     }

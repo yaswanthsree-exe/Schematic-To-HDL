@@ -122,6 +122,19 @@ OCR_SNAP_R = 40   # px — OCR label must be at most this far from a wire endpoi
 
 CNN_CONF = 0.85
 
+# ── Fill-stripped class refinement (solid-bodied gate symbols) ────────────────
+FILL_STROKE_MAX  = 110   # gray below this is outline ink; above is fill/paper
+FILL_FRAC_MIN    = 0.20  # box must be this filled before its class is re-read
+                         # measured: coloured-latch gates 0.27, the most
+                         # saturated corpus gates 0.13 — 0.20 sits between,
+                         # with margin on both sides
+FILL_REFINE_IOU  = 0.50  # stripped detection must overlap the original box
+FILL_REFINE_CONF = 0.50  # and be at least this confident to override
+
+# ── Fused-X (bowtie) crossing repair ──────────────────────────────────────────
+X_BRIDGE_MAX_LEN = 25.0   # max stub joining the two halves of a fused crossing
+X_PAIR_DOT_MAX   = -0.5   # arm pair must be this opposite to count as through
+
 # ── Data structures ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -280,6 +293,80 @@ def _yolo_boxes(img: np.ndarray, model: YOLO, conf: float) -> List[Dict]:
     return boxes
 
 
+def _fill_frac(img: np.ndarray, b: Dict) -> float:
+    """Fraction of a gate box that is solid FILL rather than paper or stroke.
+
+    Fill means a SATURATED COLOUR body.  An earlier version also counted a
+    mid-tone gray band, which caught the anti-aliased strokes of hand-drawn
+    corpus gates: measured on the 177-image corpus it flipped 9 images'
+    classes (OR→NOR ×3, XOR→AND ×2, AND→NAND), inventing inversion bubbles
+    that were not drawn.  Greyscale art must score 0 here.
+    """
+    x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+    crop = img[max(0, y):y + h, max(0, x):x + w]
+    if crop.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    filled = (hsv[:, :, 1] > 60) & (hsv[:, :, 2] > 60)
+    return float(filled.mean())
+
+
+def _strip_fill(img: np.ndarray) -> np.ndarray:
+    """Render only the dark strokes on white, discarding solid fill.
+
+    Otsu cannot do this: it treats a mid-tone fill as ink, so a filled gate
+    becomes a solid blob and the detector still mis-reads it.  Keeping just the
+    dark outline restores the hollow line-art the model was trained on.
+    Measured on a coloured NOR latch: original XNOR 0.96/0.94 (wrong),
+    Otsu line-art XNOR 0.69 / NOR 0.64, fill-stripped NOR 0.87/0.78 (right).
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    strokes = (gray < FILL_STROKE_MAX).astype(np.uint8) * 255
+    return cv2.cvtColor(255 - strokes, cv2.COLOR_GRAY2BGR)
+
+
+def _iou(a: Dict, b: Dict) -> float:
+    ax2, ay2 = a["x"] + a["w"], a["y"] + a["h"]
+    bx2, by2 = b["x"] + b["w"], b["y"] + b["h"]
+    ix = max(0, min(ax2, bx2) - max(a["x"], b["x"]))
+    iy = max(0, min(ay2, by2) - max(a["y"], b["y"]))
+    inter = ix * iy
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def refine_filled_gate_classes(boxes: List[Dict], img: np.ndarray,
+                               model: YOLO) -> None:
+    """Re-read the CLASS of solid-filled gates from a fill-stripped rendering.
+
+    Deliberately does NOT touch bounding boxes.  The existing domain-normalised
+    pass swaps the whole box set, and context.md records that the resulting
+    bbox shifts regressed the corpus (propagation 322→314, and 322→315 for a
+    second variant).  Localisation from the original image is already good; it
+    is only classification that colour breaks.  So this overrides `cls` alone,
+    and only for gates whose body is actually filled — hollow line-art gates
+    score ~0 on _fill_frac and are never touched, which is what keeps the
+    corpus unchanged.
+    """
+    filled = [b for b in boxes if _fill_frac(img, b) >= FILL_FRAC_MIN]
+    if not filled:
+        return
+    stripped = _yolo_boxes(_strip_fill(img), model, YOLO_CONF)
+    if not stripped:
+        return
+    for b in filled:
+        best = max(stripped, key=lambda s: _iou(b, s))
+        if _iou(b, best) < FILL_REFINE_IOU or best["conf"] < FILL_REFINE_CONF:
+            continue
+        if best["cls"] == b["cls"]:
+            continue
+        log.info("Fill-stripped reclassification %s: %s (%.2f) → %s (%.2f)",
+                 b.get("id") or "?", b["cls"], b["conf"],
+                 best["cls"], best["conf"])
+        b["cls"] = best["cls"]
+        b["cls_fill_refined"] = True     # reclassify_gates must not undo this
+
+
 def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
     img = cv2.imread(image_path)
     if img is None:
@@ -350,6 +437,8 @@ def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
     # Re-assign sequential IDs after NMS
     for i, b in enumerate(boxes):
         b["id"] = f"G{i+1}"
+    # Class-only correction for solid-filled gate bodies (boxes untouched).
+    refine_filled_gate_classes(boxes, img, model)
     log.info("Detected %d gate(s).", len(boxes))
     return boxes, img
 
@@ -375,7 +464,11 @@ def reclassify_gates(boxes: List[Dict], img: np.ndarray, clf) -> List[Dict]:
         best_cls  = max(votes, key=votes.__getitem__)
         best_conf = votes[best_cls] / len(outs)
         nb = dict(b)
-        if best_conf >= CNN_CONF and best_cls != b["cls"]:
+        # A fill-stripped correction already read this gate from a rendering
+        # inside the training domain; the CNN sees the original coloured crop
+        # and is exactly what the correction was compensating for.
+        if (best_conf >= CNN_CONF and best_cls != b["cls"]
+                and not b.get("cls_fill_refined")):
             nb["cls"] = best_cls
         result.append(nb)
     return result
@@ -1564,6 +1657,152 @@ def build_nets(
             if ra != rb:
                 _parent[ra] = rb
 
+    # ── Fused-X repair ────────────────────────────────────────────────────────
+    # Thinning does not always reduce a wire crossing to one node.  On thick or
+    # anti-aliased wires the X collapses into a BOWTIE: two 3-arm junction
+    # clusters joined by a short bridge segment (measured 17 px on a coloured
+    # SR latch).  The bridge exceeds MESH_CLUSTER_LEN, so the halves stay
+    # separate, each looks like a plain 3-arm T-junction, and the rule below
+    # merges ALL of their arms — welding the two crossing wires into one net.
+    # For a cross-coupled latch that shorts Q to Qbar, and build_gate_graph's
+    # short-circuit demotion then strips BOTH gates of their output, which is
+    # why such latches came out as disconnected gates.
+    #
+    # A fused X is recognised by its geometry: absorb the bridge and the
+    # combined arms pair off into straight-through (opposite-direction) pairs
+    # with NO arm left over.  Two genuine T-junctions sharing a bus fail that
+    # test -- their tap arms point the same way, so they cannot pair -- and a
+    # dotted junction is excluded outright, since a solder dot means a real
+    # connection regardless of geometry.
+    bridge_eids: Set[int] = set()
+
+    def _arms_of(root: int) -> List[int]:
+        out: List[int] = []
+        seen_a: Set[int] = set()
+        members = [n_ for n_ in jnodes if _cfind(n_) == root]
+        mset = set(members)
+        for n_ in members:
+            for eid in node_edgs[n_]:
+                if eid in seen_a:
+                    continue
+                seen_a.add(eid)
+                e = skel_graph.edges[eid]
+                if (e.a in mset and e.b in mset
+                        and _edge_euclidean_len(e) <= MESH_CLUSTER_LEN):
+                    continue          # internal micro-edge
+                out.append(eid)
+        return out
+
+    def _centre_of(root: int) -> Tuple[int, int]:
+        members = [n_ for n_ in jnodes if _cfind(n_) == root]
+        return (int(sum(skel_graph.node_xy[n_][0] for n_ in members) / len(members)),
+                int(sum(skel_graph.node_xy[n_][1] for n_ in members) / len(members)))
+
+    def _all_arms_pair_through(eids: List[int], nodes: Set[int],
+                               sides: List[int]) -> bool:
+        """True when every arm has a straight-through partner ACROSS the bridge.
+
+        Two conditions, both needed:
+          * every arm is paired (no leftovers), and
+          * each pair spans the bridge — one arm from each half.
+
+        The cross-side requirement is what makes this a *crossing* test rather
+        than a "these directions happen to be opposite" test.  Without it a
+        junction whose two collinear arms sit on the same side qualifies, which
+        cost a corpus image its NOT→AND link and duplicated an AND term.
+        """
+        if len(eids) < 4 or len(eids) % 2:
+            return False
+        dirs = []
+        for eid in eids:
+            e = skel_graph.edges[eid]
+            n_ = e.a if e.a in nodes else e.b
+            dirs.append(_edge_dir_at_node(e, n_))
+        pair_dots = []
+        for i in range(len(eids)):
+            for j in range(i + 1, len(eids)):
+                if sides[i] == sides[j]:
+                    continue            # both arms on one half: not through
+                pair_dots.append((dirs[i][0] * dirs[j][0]
+                                  + dirs[i][1] * dirs[j][1], i, j))
+        pair_dots.sort()
+        paired = [False] * len(eids)
+        for dot, i, j in pair_dots:
+            if dot >= X_PAIR_DOT_MAX:
+                break
+            if paired[i] or paired[j]:
+                continue
+            paired[i] = paired[j] = True
+        return all(paired)
+
+    # Thinning may split one crossing across a CHAIN of micro-clusters, not
+    # just two: a JK flip-flop's Q/Qbar crossover arrived as three clusters
+    # linked by 7.2 px and 10.0 px stubs, holding 1, 2 and 1 arms.  Judging one
+    # bridge at a time is useless there -- either pairing shows 3 arms and looks
+    # like a plain T -- so whole bridge-connected COMPONENTS are judged at once,
+    # which is the only view in which the true four arms are visible.
+    _bridge_adj: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    for eid, edge in enumerate(skel_graph.edges):
+        if edge.a not in jset or edge.b not in jset:
+            continue
+        blen = _edge_euclidean_len(edge)
+        if blen <= MESH_CLUSTER_LEN or blen > X_BRIDGE_MAX_LEN:
+            continue
+        ra, rb = _cfind(edge.a), _cfind(edge.b)
+        if ra != rb:
+            _bridge_adj[ra].append((eid, rb))
+            _bridge_adj[rb].append((eid, ra))
+
+    _components: List[Tuple[Set[int], Set[int]]] = []
+    _seen_roots: Set[int] = set()
+    for _start in list(_bridge_adj):
+        if _start in _seen_roots:
+            continue
+        comp_roots: Set[int] = set()
+        comp_bridges: Set[int] = set()
+        stack = [_start]
+        while stack:
+            r_ = stack.pop()
+            if r_ in comp_roots:
+                continue
+            comp_roots.add(r_)
+            for b_eid, other in _bridge_adj[r_]:
+                comp_bridges.add(b_eid)
+                if other not in comp_roots:
+                    stack.append(other)
+        _seen_roots |= comp_roots
+        if len(comp_roots) >= 2:
+            _components.append((comp_roots, comp_bridges))
+
+    for comp_roots, comp_bridges in _components:
+        arms: List[int] = []
+        sides: List[int] = []
+        for r_ in comp_roots:
+            for a_eid in _arms_of(r_):
+                if a_eid in comp_bridges:
+                    continue
+                arms.append(a_eid)
+                sides.append(r_)          # side = which cluster the arm leaves
+        # EXACTLY four: an X is two wires crossing.  Six or more arms is a bus
+        # with several taps, where "all arms pair off" stops being evidence of
+        # a crossing -- an up-tap and a down-tap pair with each other quite
+        # happily.  Allowing 6 cost 4 corpus images (propagations 749→746).
+        if len(arms) != 4:
+            continue
+        if any(_near_dot(*_centre_of(r_)) for r_ in comp_roots):
+            continue                      # soldered junction: never split
+        members = {n_ for n_ in jnodes if _cfind(n_) in comp_roots}
+        if not _all_arms_pair_through(arms, members, sides):
+            continue                      # not a crossing (e.g. bus taps)
+        root_list = sorted(comp_roots)
+        log.info("Fused-X repair: %d clusters, %d bridges at %s — "
+                 "%d arms pair straight through.",
+                 len(comp_roots), len(comp_bridges),
+                 _centre_of(root_list[0]), len(arms))
+        bridge_eids |= comp_bridges
+        for r_ in root_list[1:]:
+            _parent[_cfind(r_)] = _cfind(root_list[0])
+
     clusters: Dict[int, List[int]] = defaultdict(list)
     for n_ in jnodes:
         clusters[_cfind(n_)].append(n_)
@@ -1580,7 +1819,8 @@ def build_nets(
         internal = {eid for eid in inc
                     if skel_graph.edges[eid].a in cset
                     and skel_graph.edges[eid].b in cset
-                    and _edge_euclidean_len(skel_graph.edges[eid]) <= MESH_CLUSTER_LEN}
+                    and (_edge_euclidean_len(skel_graph.edges[eid])
+                         <= MESH_CLUSTER_LEN or eid in bridge_eids)}
         external = [eid for eid in inc if eid not in internal]
         ccx = int(sum(skel_graph.node_xy[n_][0] for n_ in cnodes) / len(cnodes))
         ccy = int(sum(skel_graph.node_xy[n_][1] for n_ in cnodes) / len(cnodes))
