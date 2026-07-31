@@ -109,11 +109,51 @@ def classify_device(tokens: List[str]) -> Optional[Tuple[str, str]]:
     joined = "".join(norm)
     if not any(k in joined for k in _KIND_WORDS):
         return None
+    # "D-type flip-flop" normalises to DTYPE, so a bare letter key would never
+    # be seen as a token.  Accept the "<letter>TYPE" spelling as well.
+    variants = set(norm)
+    for t in norm:
+        if t.endswith("TYPE") and len(t) > 4:
+            variants.add(t[:-4])
     for key in ("JK", "SR", "D", "T"):
-        if key in norm or (len(key) == 2 and key in joined):
+        if key in variants or (len(key) == 2 and key in joined):
             cls = DEVICE_TABLE[key][0]
             kind = "LATCH" if "LATCH" in joined else "FLIP FLOP"
             return cls, f"{key} {kind}"
+    return None
+
+
+#: Output pin spellings, including the ways OCR renders a bar over Q.
+_Q_TOKENS = {"Q", "Q'", "QBAR", "QN", "QB", "NQ"}
+
+#: Data-pin signatures that identify a device on their own, most specific
+#: first: a box carrying J and K is a JK flip-flop whether or not anyone wrote
+#: "flip-flop" inside it.
+_PIN_SIGNATURES: List[Tuple[str, frozenset]] = [
+    ("JK", frozenset({"J", "K"})),
+    ("SR", frozenset({"S", "R"})),
+    ("D",  frozenset({"D"})),
+    ("T",  frozenset({"T"})),
+]
+
+
+def classify_by_pins(tokens: List[str]) -> Optional[Tuple[str, str]]:
+    """Identify a device from its PIN LABELS when no device name is written.
+
+    Textbook symbols often label only the pins and mark the clock with a
+    triangle rather than the word CLK, so there is no name to read -- a T
+    flip-flop came back as just T, Q and Q'.  The pin set is still decisive.
+
+    Requires a Q-like output so that arbitrary boxed text cannot qualify, and
+    is only ever consulted after the device-name reading fails.
+    """
+    norm = {_norm(t) for t in tokens}
+    norm.discard("")
+    if not (norm & _Q_TOKENS):
+        return None
+    for key, pins in _PIN_SIGNATURES:
+        if pins <= norm:
+            return DEVICE_TABLE[key][0], f"{key} FLIP FLOP"
     return None
 
 
@@ -125,22 +165,36 @@ def _side_of(cx: float, cy: float, box: Tuple[int, int, int, int]) -> str:
         [dl, dr, dt, db].index(min(dl, dr, dt, db))]
 
 
-def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN
-                    ) -> List[Block]:
+def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
+                    reocr=None) -> List[Block]:
     """Build Block records from a grayscale image plus OCR output.
 
     *ocr_results* is EasyOCR's shape: a list of (polygon, text, confidence).
     Kept as a parameter rather than run here so this module has no OCR or
     model dependency and stays unit-testable.
+
+    *reocr* is an optional callable ``(x, y, w, h) -> ocr_results`` used to read
+    the box region again at higher magnification.  Whole-image OCR routinely
+    misses the small, low-contrast pin letters written on a block symbol -- a
+    T flip-flop came back as just ['INPUT', 'CLK'], with T, Q and Q' all
+    missed, which left nothing to classify.  Re-reading only the box, enlarged,
+    recovers them.  Results from both passes are merged.
     """
     blocks: List[Block] = []
     for box in find_box_interiors(gray, fill_min=fill_min):
         x, y, w, h = box
         mx, my = PIN_LABEL_MARGIN * w, PIN_LABEL_MARGIN * h
 
+        results = list(ocr_results)
+        if reocr is not None:
+            try:
+                results = results + list(reocr(x, y, w, h))
+            except Exception:
+                pass
+
         inside_words: List[str] = []
         edge_labels: List[Tuple[str, str]] = []          # (side, text)
-        for poly, text, _conf in ocr_results:
+        for poly, text, _conf in results:
             cx = sum(p[0] for p in poly) / len(poly)
             cy = sum(p[1] for p in poly) / len(poly)
             if not (x - mx <= cx <= x + w + mx and y - my <= cy <= y + h + my):
@@ -155,9 +209,12 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN
             else:
                 inside_words.append(token)
 
-        # A device word sitting near an edge still names the device.
+        # A device word sitting near an edge still names the device.  Falling
+        # back to the pin signature covers symbols that carry no name at all.
+        all_tokens = inside_words + [t for _s, t in edge_labels]
         device = (classify_device(inside_words)
-                  or classify_device(inside_words + [t for _s, t in edge_labels]))
+                  or classify_device(all_tokens)
+                  or classify_by_pins(all_tokens))
         if device is None:
             continue
         cls, name = device

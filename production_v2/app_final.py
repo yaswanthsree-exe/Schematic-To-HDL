@@ -19,23 +19,55 @@ from pattern_engine.block_form import blocks_from_ocr, graph_from_blocks
 
 
 def try_block_form(image_path):
-    """Recognise a flip-flop drawn as a labelled box, when no gates were found.
+    """Recognise a flip-flop drawn as a labelled box.
 
-    Runs only on the empty-graph path, so the ordinary gate pipeline is never
-    affected.  OCR is imported lazily -- this keeps the block module itself
-    dependency-free and unit-testable.
+    OCR is imported lazily so the block module itself stays dependency-free and
+    unit-testable.  The box region is read a second time at higher
+    magnification: whole-image OCR routinely misses the small pin letters on a
+    symbol, and those letters are what identify the device when no name is
+    written inside it.
     """
     try:
         import cv2
         import easyocr
+        bgr = cv2.imread(image_path)
         gray = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if gray is None:
+        if gray is None or bgr is None:
             return {}
         reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        results = reader.readtext(cv2.imread(image_path))
-        return graph_from_blocks(blocks_from_ocr(gray, results))
+        results = reader.readtext(bgr)
+
+        def reocr(x, y, w, h):
+            pad = int(0.25 * max(w, h))
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            crop = bgr[y0:min(bgr.shape[0], y + h + pad),
+                       x0:min(bgr.shape[1], x + w + pad)]
+            if crop.size == 0:
+                return []
+            scale = max(1.0, 900.0 / max(crop.shape[:2]))
+            big = cv2.resize(crop, None, fx=scale, fy=scale,
+                             interpolation=cv2.INTER_CUBIC)
+            found = reader.readtext(big, text_threshold=0.5, low_text=0.3)
+            return [([[p[0] / scale + x0, p[1] / scale + y0] for p in poly],
+                     t, c) for poly, t, c in found]
+
+        return graph_from_blocks(blocks_from_ocr(gray, results, reocr=reocr))
     except Exception:
         return {}
+
+
+def _is_degenerate(graph):
+    """True when the gate graph carries no real circuit structure.
+
+    A block symbol is not always gate-free: the edge-trigger triangle drawn
+    inside it is detected as a NOT gate, so gating the block path on "no gates
+    at all" missed every clocked symbol.  What actually distinguishes them is
+    connectivity -- a real gate-level circuit wires gates to each other, a
+    stray triangle wires to nothing.
+    """
+    return not any(src in graph
+                   for node in graph.values()
+                   for src in node.get("inputs", ()))
 
 st.set_page_config(page_title="Schematic → Netlist → HDL",
                    page_icon="⚡", layout="wide",
@@ -169,21 +201,22 @@ st.write("")
 st.markdown('<span class="stage">STAGE 3</span> **Netlist → Synthesizable HDL**',
             unsafe_allow_html=True)
 
-if not result.graph:
-    # No gates found.  Before giving up, try the block-form path: a flip-flop
-    # drawn as a labelled box has no gate symbols at all, so the detector
-    # legitimately finds nothing even though the device is fully identifiable
-    # from the text written inside it.
+if _is_degenerate(result.graph):
+    # Nothing wired to anything.  Before giving up, try the block-form path: a
+    # flip-flop drawn as a labelled box is fully identifiable from the text on
+    # it, even though it has no gate-level structure for the tracer to find.
     block_graph = try_block_form(tmp_path)
     if block_graph:
         names = ", ".join(n.get("block", n["cls"]) for n in block_graph.values())
-        st.info(f"🔲 No gate symbols found, but recognized a block-form "
-                f"device: **{names}**")
+        st.info(f"🔲 Recognized a block-form device: **{names}** — read from "
+                f"the symbol's label and pins rather than from gates.")
         result.graph = block_graph
+        result.global_inputs = set()
+        result.global_outputs = set()
         for node in block_graph.values():
             result.global_inputs.update(node["inputs"])
             result.global_outputs.update(node["outputs"])
-    else:
+    elif not result.graph:
         st.warning("No gate graph extracted — cannot generate HDL.")
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
