@@ -130,6 +130,8 @@ FILL_FRAC_MIN    = 0.20  # box must be this filled before its class is re-read
                          # with margin on both sides
 FILL_REFINE_IOU  = 0.50  # stripped detection must overlap the original box
 FILL_REFINE_CONF = 0.50  # and be at least this confident to override
+FILL_ADD_CONF    = 0.55  # a box the original pass MISSED needs more confidence
+FILL_ADD_IOU     = 0.30  # ...and must not already be covered by one
 
 
 # ── Fused-X (bowtie) crossing repair ──────────────────────────────────────────
@@ -367,6 +369,27 @@ def refine_filled_gate_classes(boxes: List[Dict], img: np.ndarray,
         b["cls"] = best["cls"]
         b["cls_fill_refined"] = True     # reclassify_gates must not undo this
 
+    # A solid fill can hide a gate ENTIRELY, not just its class: an SR latch
+    # drawn with orange bodies gave up only its two NORs, both misread, while
+    # the stripped rendering found all four gates with the right classes.
+    # Boxes the original pass never proposed are therefore added here.
+    #
+    # Only for images that actually have filled symbols -- `filled` being
+    # non-empty is the gate.  On ordinary line art the stripped rendering is
+    # noisier than the original, and merging its boxes is what caused the
+    # historic corpus regression (propagation 322->314).
+    for s in stripped:
+        if s["conf"] < FILL_ADD_CONF:
+            continue
+        if any(_iou(s, b) >= FILL_ADD_IOU for b in boxes):
+            continue                     # already represented
+        if _fill_frac(img, s) < FILL_FRAC_MIN:
+            continue                     # not a filled symbol: leave it alone
+        log.info("Fill-stripped detection added a missed %s (%.2f) at (%d,%d)",
+                 s["cls"], s["conf"], s["x"], s["y"])
+        s["cls_fill_refined"] = True
+        boxes.append(s)
+
 
 def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
     img = cv2.imread(image_path)
@@ -435,11 +458,13 @@ def detect_gates(image_path: str, model: YOLO) -> Tuple[List[Dict], np.ndarray]:
             boxes = boxes_retry
 
     boxes = _nms(boxes)
+    # Correct classes, and recover whole gates the fill hid, before IDs are
+    # handed out -- an added box has to be numbered like any other.
+    refine_filled_gate_classes(boxes, img, model)
+    boxes = _nms(boxes)
     # Re-assign sequential IDs after NMS
     for i, b in enumerate(boxes):
         b["id"] = f"G{i+1}"
-    # Class-only correction for solid-filled gate bodies (boxes untouched).
-    refine_filled_gate_classes(boxes, img, model)
     log.info("Detected %d gate(s).", len(boxes))
     return boxes, img
 
