@@ -70,6 +70,9 @@ class Block:
     name:    str                                 # e.g. "SR FLIP FLOP"
     inputs:  List[str] = field(default_factory=list)
     outputs: List[str] = field(default_factory=list)
+    #: Where each pin LABEL was actually read, for pins OCR recovered.  Pins
+    #: filled in from the canonical set have no position and cannot be traced.
+    pin_xy:  Dict[str, Tuple[int, int]] = field(default_factory=dict)
 
     def to_graph_node(self) -> Dict[str, Any]:
         return {"cls": self.cls, "inputs": list(self.inputs),
@@ -253,6 +256,7 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
 
         inside_words: List[str] = []
         edge_labels: List[Tuple[str, str]] = []          # (side, text)
+        label_xy: Dict[str, Tuple[int, int]] = {}        # pin label -> centre
         for poly, text, _conf in results:
             cx = sum(p[0] for p in poly) / len(poly)
             cy = sum(p[1] for p in poly) / len(poly)
@@ -267,6 +271,7 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
                          or cy < y + my or cy > y + h - my)
             if near_edge:
                 edge_labels.append((_side_of(cx, cy, box), token))
+                label_xy.setdefault(token, (int(cx), int(cy)))
             else:
                 inside_words.append(token)
 
@@ -287,14 +292,126 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
 
         found_async = [t for _s, t in edge_labels if t in ASYNC_PINS]
         inputs = list(canon_in) + [t for t in dict.fromkeys(found_async)]
-        blocks.append(Block(cls=cls, bbox=box, name=name,
+        # Keep positions only for pins this device actually has, so a stray
+        # word near the box cannot be mistaken for a pin later.
+        wanted = set(inputs) | set(canon_out) | _Q_TOKENS | _EN_TOKENS
+        pin_xy = {k: v for k, v in label_xy.items() if k in wanted}
+        blocks.append(Block(cls=cls, bbox=box, name=name, pin_xy=pin_xy,
                             inputs=inputs, outputs=list(canon_out)))
     return blocks
 
 
-def graph_from_blocks(blocks: List[Block]) -> Dict[str, Dict[str, Any]]:
-    """A gate-graph dict containing one node per recognised block."""
+#: How far from a pin label to search for the wire it belongs to, as a
+#: fraction of the box's larger side.  The label sits beside its stub, not on
+#: it, so the search has to reach past the gap between them.
+PIN_TRACE_FRAC = 0.45
+
+
+def pin_nets(gray, blocks: List[Block]):
+    """Map every locatable block pin to the wire it touches.
+
+    Returns {(block_index, pin_name): net_id}.  A net id is just a connected
+    component of ink once the boxes themselves are erased, which is enough to
+    answer the two questions that matter: do two pins share a wire, and does
+    one block's output reach another block's input.
+
+    Erasing the boxes first is what makes this work -- otherwise every pin is
+    "connected" through the box outline itself, and the whole schematic
+    collapses into one component.
+    """
+    import cv2
+    import numpy as np
+
+    ink = (gray < 128).astype(np.uint8)
+    for (x, y, w, h) in (b.bbox for b in blocks):
+        # The stored bbox is the box INTERIOR, so grow it to swallow the
+        # outline; without that the border survives and shorts every pin.
+        pad = max(3, int(0.04 * max(w, h)))
+        ink[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad] = 0
+
+    n_lab, lab = cv2.connectedComponents(ink, 8)
+
+    out: Dict[Tuple[int, str], int] = {}
+    for bi, b in enumerate(blocks):
+        x, y, w, h = b.bbox
+        reach = int(PIN_TRACE_FRAC * max(w, h))
+        for pin, (px, py) in b.pin_xy.items():
+            best, best_d = None, None
+            y0, y1 = max(0, py - reach), min(lab.shape[0], py + reach + 1)
+            x0, x1 = max(0, px - reach), min(lab.shape[1], px + reach + 1)
+            win = lab[y0:y1, x0:x1]
+            ys, xs = np.nonzero(win)
+            for wy, wx in zip(ys, xs):
+                d = (wy + y0 - py) ** 2 + (wx + x0 - px) ** 2
+                if best_d is None or d < best_d:
+                    best_d, best = d, int(win[wy, wx])
+            if best:
+                out[(bi, pin)] = best
+    return out
+
+
+def _is_output(pin: str) -> bool:
+    return _norm(pin) in _Q_TOKENS
+
+
+def graph_from_blocks(blocks: List[Block], nets=None
+                      ) -> Dict[str, Dict[str, Any]]:
+    """A gate-graph dict containing one node per recognised block.
+
+    With *nets* (from :func:`pin_nets`) the blocks are also WIRED: an input pin
+    sharing a net with another block's output becomes a reference to that
+    block, and input pins sharing one net collapse to a single signal.  That
+    second case is what a JK wired as a T flip-flop looks like -- T drives both
+    J and K -- which without this was emitted as two independent ports.
+    """
     graph: Dict[str, Dict[str, Any]] = {}
-    for i, b in enumerate(blocks, 1):
-        graph[f"B{i}"] = b.to_graph_node()
+    ids = [f"B{i}" for i in range(1, len(blocks) + 1)]
+
+    if not nets:
+        for gid, b in zip(ids, blocks):
+            graph[gid] = b.to_graph_node()
+        return graph
+
+    # net -> the block driving it, if any
+    driver: Dict[int, str] = {}
+    for (bi, pin), net in nets.items():
+        if _is_output(pin):
+            driver.setdefault(net, ids[bi])
+
+    # net -> shared name, so pins on one wire report one signal
+    shared: Dict[int, str] = {}
+    for (bi, pin), net in nets.items():
+        if not _is_output(pin) and net not in driver:
+            shared.setdefault(net, pin)
+
+    for gid, bi, b in zip(ids, range(len(blocks)), blocks):
+        node = b.to_graph_node()
+        resolved: List[str] = []
+        for pin in node["inputs"]:
+            net = nets.get((bi, pin))
+            if net is None:
+                resolved.append(pin)                    # never located
+            elif net in driver and driver[net] != gid:
+                resolved.append(driver[net])            # driven by a block
+            else:
+                resolved.append(shared.get(net, pin))   # shared external wire
+        # de-duplicate while preserving order: two pins on one wire are one
+        # signal, and repeating it would imply a fan-in the drawing never had
+        # Keep the pin -> signal mapping.  `inputs` is de-duplicated because two
+        # pins on one wire are one signal, but the emitter still asks for each
+        # pin BY NAME: without this map a JK whose K was merged into J resolved
+        # K positionally and emitted `case ({J, CLK})`, clocking the device on
+        # its own clock line.
+        node.setdefault("ports", {})["inputs"] = dict(zip(node["inputs"],
+                                                          resolved))
+        node["inputs"] = list(dict.fromkeys(resolved))
+
+        # An output feeding another block is an internal wire, not a port of
+        # the whole circuit -- a master's Q goes to the slave, it is not an
+        # output of the design.
+        consumed = {net for (bj, pin), net in nets.items()
+                    if not _is_output(pin) and bj != bi}
+        node["outputs"] = [o for o in node["outputs"]
+                           if nets.get((bi, o)) not in consumed]
+        graph[gid] = node
     return graph

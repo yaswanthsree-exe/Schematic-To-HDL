@@ -15,7 +15,8 @@ from predict import (CircuitResult, find_best_model, predict_circuit,
                      find_gate_classifier, load_gate_classifier)
 from hdl_gen import generate_all
 from pattern_engine import compress
-from pattern_engine.block_form import blocks_from_ocr, graph_from_blocks
+from pattern_engine.block_form import (blocks_from_ocr, graph_from_blocks,
+                                        pin_nets)
 
 
 def try_block_form(image_path):
@@ -51,7 +52,8 @@ def try_block_form(image_path):
             return [([[p[0] / scale + x0, p[1] / scale + y0] for p in poly],
                      t, c) for poly, t, c in found]
 
-        return graph_from_blocks(blocks_from_ocr(gray, results, reocr=reocr))
+        blocks = blocks_from_ocr(gray, results, reocr=reocr)
+        return graph_from_blocks(blocks, pin_nets(gray, blocks))
     except Exception:
         return {}
 

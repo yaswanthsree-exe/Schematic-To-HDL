@@ -46,7 +46,8 @@ def _block_reader():
     """Lazily build the OCR-backed block reader used by app_final."""
     import cv2
     import easyocr
-    from pattern_engine.block_form import blocks_from_ocr, graph_from_blocks
+    from pattern_engine.block_form import (blocks_from_ocr, graph_from_blocks,
+                                            pin_nets)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         reader = easyocr.Reader(["en"], gpu=False, verbose=False)
@@ -74,7 +75,8 @@ def _block_reader():
             return [([[p[0] / scale + x0, p[1] / scale + y0] for p in poly], t, c)
                     for poly, t, c in found]
 
-        return graph_from_blocks(blocks_from_ocr(gray, results, reocr=reocr))
+        blocks = blocks_from_ocr(gray, results, reocr=reocr)
+        return graph_from_blocks(blocks, pin_nets(gray, blocks))
     return read
 
 
