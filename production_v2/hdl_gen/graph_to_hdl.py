@@ -263,19 +263,32 @@ def _block_async(inst, gid: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _block_body(inst, gid: str, kind: str) -> List[str]:
-    """Clocked body shared by every block-form flip-flop.
+    """Body shared by every block-form storage device.
 
-    Async preset/clear are emitted only when the symbol actually showed those
-    pins, so a plain 3-pin device does not gain phantom controls.
+    Edge-triggered devices sample on a clock edge; latches follow their inputs
+    while the enable is high, so they are emitted as a level-sensitive block
+    guarded by the enable.  Async preset/clear are emitted only when the symbol
+    actually showed those pins, so a plain 3-pin device does not gain phantom
+    controls.
     """
     q = inst.wname[gid]
     pre, clr = _block_async(inst, gid)
-    sens = "posedge " + _port_operands(inst, gid, ["CLK"])[0]
-    if pre:
-        sens += f" or posedge {pre}"
-    if clr:
-        sens += f" or posedge {clr}"
-    L = [f"    always @({sens}) begin"]
+    level = kind in _LEVEL_SENSITIVE
+    # A latch's control pin is named EN, not CLK.  Asking for "CLK" on a latch
+    # found no such port and fell through to positional order, which handed
+    # back the DATA pin -- emitting `if (D)` as the transparency condition.
+    enable = _port_operands(inst, gid, ["EN" if level else "CLK"])[0]
+
+    if level:
+        L = [f"    always @(*) begin"]
+    else:
+        sens = "posedge " + enable
+        if pre:
+            sens += f" or posedge {pre}"
+        if clr:
+            sens += f" or posedge {clr}"
+        L = [f"    always @({sens}) begin"]
+
     ind = "        "
     if clr:
         L.append(f"{ind}if ({clr}) {q}_r <= 1'b0;")
@@ -283,7 +296,16 @@ def _block_body(inst, gid: str, kind: str) -> List[str]:
     if pre:
         L.append(f"{ind}if ({pre}) {q}_r <= 1'b1;")
         ind = "        else "
-    L.extend(kind_line.replace("@@", ind) for kind_line in _BLOCK_KIND[kind](inst, gid, q))
+    if level:
+        # transparent only while the enable is asserted
+        L.append(f"{ind}if ({enable}) begin")
+        body_ind = "            "
+        L.extend(line.replace("@@", body_ind)
+                 for line in _BLOCK_KIND[kind](inst, gid, q))
+        L.append("        end")
+    else:
+        L.extend(line.replace("@@", ind)
+                 for line in _BLOCK_KIND[kind](inst, gid, q))
     L.append("    end")
     return L
 
@@ -320,7 +342,17 @@ _BLOCK_KIND = {
     "JKFF_BLOCK": _jk_block_body,
     "DFF_BLOCK":  _d_block_body,
     "TFF_BLOCK":  _t_block_body,
+    # Latch bodies reuse the same case logic; only the sensitivity differs.
+    "SRLATCH_BLOCK": _sr_block_body,
+    "DLATCH_BLOCK":  _d_block_body,
 }
+
+#: Block classes that are LEVEL-sensitive, not edge-triggered.
+#: A latch follows its inputs the whole time its enable is high; a flip-flop
+#: samples on a clock edge.  Emitting a latch as `always @(posedge CLK)` --
+#: which is what a box reading "D LATCH" used to produce -- describes different
+#: hardware, and does so silently.
+_LEVEL_SENSITIVE = {"SRLATCH_BLOCK", "DLATCH_BLOCK"}
 
 
 def _make_block_emitter(kind: str):
@@ -389,6 +421,8 @@ _MACRO_OUTPUT_SUFFIX = {
     "SRFF_BLOCK":    _QQBAR,
     "JKFF_BLOCK":    _QQBAR,
     "DFF_BLOCK":     _QQBAR,
+    "SRLATCH_BLOCK": _QQBAR,
+    "DLATCH_BLOCK":  _QQBAR,
     "TFF_BLOCK":     _QQBAR,
 }
 
@@ -430,6 +464,8 @@ _IC: Dict[str, Tuple[str, str, int]] = {
     "SRFF_BLOCK": ("74279", "Quad SR latch",           4),
     "JKFF_BLOCK": ("7476",  "Dual JK flip-flop",       2),
     "DFF_BLOCK":  ("7474",  "Dual D flip-flop",        2),
+    "SRLATCH_BLOCK": ("74279", "Quad SR latch",         4),
+    "DLATCH_BLOCK":  ("7475",  "Quad D latch",          4),
     "TFF_BLOCK":  ("7476",  "Dual JK as T flip-flop",  2),
 }
 

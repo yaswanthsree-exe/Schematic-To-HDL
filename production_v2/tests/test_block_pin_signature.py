@@ -55,9 +55,14 @@ class TestDeviceName:
     def test_plain_name_still_works(self):
         assert classify_device(["SR", "FLIP", "FLOP"])[0] == "SRFF_BLOCK"
 
-    def test_latch_named(self):
+    def test_latch_gets_a_level_sensitive_class(self):
         cls, name = classify_device(["D", "LATCH"])
-        assert cls == "DFF_BLOCK" and "LATCH" in name
+        assert cls == "DLATCH_BLOCK" and "LATCH" in name
+
+    def test_jk_latch_stays_edge_triggered(self):
+        """JK and T depend on the previous state, which a transparent latch
+        cannot hold, so there is no level-sensitive form to fall back to."""
+        assert classify_device(["JK", "LATCH"])[0] == "JKFF_BLOCK"
 
     def test_pin_letters_alone_are_not_a_device_name(self):
         """An S and an R floating in a box are pins, not a name -- the name

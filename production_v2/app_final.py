@@ -182,9 +182,34 @@ with c2:
     st.caption("AI detections")
     st.image(cv2.cvtColor(result.annotated_image, cv2.COLOR_BGR2RGB), use_container_width=True)
 
+# Block-form takeover happens BEFORE anything is reported, so the netlist and
+# equations panels cannot show gate-level output that the block result then
+# contradicts.  A clocked symbol's edge-trigger triangle is detected as a NOT
+# gate, which previously left "G1 = NOT(A)" on screen next to a JK flip-flop.
+block_graph = try_block_form(tmp_path) if _is_degenerate(result.graph) else {}
+if block_graph:
+    result.graph = block_graph
+    result.gates = []
+    result.global_inputs = {i for n in block_graph.values() for i in n["inputs"]}
+    result.global_outputs = {o for n in block_graph.values() for o in n["outputs"]}
+    result.netlist = "\n".join(
+        f"{gid} = {n.get('block', n['cls'])}({', '.join(n['inputs'])})"
+        f"  ->  {', '.join(n['outputs'])}"
+        for gid, n in block_graph.items())
+    result.equations = ("— sequential device: state is held, so it has no "
+                        "combinational equation —")
+    result.warnings = [w for w in result.warnings if "gate" not in w.lower()]
+
 ins = ", ".join(sorted(result.global_inputs)) or "none"
 outs = ", ".join(sorted(result.global_outputs)) or "none"
-st.success(f"Extracted **{len(result.gates)}** gate(s) — Inputs: `{ins}` | Outputs: `{outs}`")
+if block_graph:
+    names = ", ".join(n.get("block", n["cls"]) for n in block_graph.values())
+    st.info(f"🔲 Recognized a block-form device: **{names}** — read from the "
+            f"symbol's label and pins, not from gates.")
+    st.success(f"Inputs: `{ins}` | Outputs: `{outs}`")
+else:
+    st.success(f"Extracted **{len(result.gates)}** gate(s) — "
+               f"Inputs: `{ins}` | Outputs: `{outs}`")
 for w in result.warnings:
     st.warning(f"⚠ {w}")
 
@@ -201,26 +226,11 @@ st.write("")
 st.markdown('<span class="stage">STAGE 3</span> **Netlist → Synthesizable HDL**',
             unsafe_allow_html=True)
 
-if _is_degenerate(result.graph):
-    # Nothing wired to anything.  Before giving up, try the block-form path: a
-    # flip-flop drawn as a labelled box is fully identifiable from the text on
-    # it, even though it has no gate-level structure for the tracer to find.
-    block_graph = try_block_form(tmp_path)
-    if block_graph:
-        names = ", ".join(n.get("block", n["cls"]) for n in block_graph.values())
-        st.info(f"🔲 Recognized a block-form device: **{names}** — read from "
-                f"the symbol's label and pins rather than from gates.")
-        result.graph = block_graph
-        result.global_inputs = set()
-        result.global_outputs = set()
-        for node in block_graph.values():
-            result.global_inputs.update(node["inputs"])
-            result.global_outputs.update(node["outputs"])
-    elif not result.graph:
-        st.warning("No gate graph extracted — cannot generate HDL.")
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        st.stop()
+if not result.graph:
+    st.warning("No gate graph extracted — cannot generate HDL.")
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    st.stop()
 
 # ── Stage 2.5: functional pattern recognition ────────────────────────────────
 with st.spinner("Recognizing functional blocks…"):

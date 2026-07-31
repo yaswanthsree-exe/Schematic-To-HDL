@@ -50,7 +50,9 @@ def test_undriven_output_is_not_tied_to_zero_vhdl():
 def test_undriven_output_still_fixed_after_compression():
     gi, go = PORTS
     r = compress(sr_flipflop_graph())
-    assert [m.cls for m in r.matches] == ["SRLATCH"]
+    # Recognised as a GATED SR latch: the two ANDs gate S and R with the clock,
+    # which the bare-latch pattern used to miss.
+    assert [m.cls for m in r.matches] == ["GATED_SRLATCH"]
     hdl = generate_all(r.graph, gi, go, "sr")
     assert _assign_for(hdl["verilog_behavioral"], "Q", "=") != "1'b0"
 

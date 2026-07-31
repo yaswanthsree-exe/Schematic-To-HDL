@@ -98,12 +98,17 @@ def _split_core_and_gating(graph: GateGraph, match: Match,
     """Separate a 4-gate latch into its cross-coupled core and its two input
     gates, or None if it does not have that shape."""
     ids = sorted(match.nodes)
-    if len(ids) != 4 or any(graph[i]["cls"] != cls for i in ids):
+    if len(ids) != 4:
         return None
+    # Only the CORE pair must be of *cls*.  The gating gates differ by family:
+    # a NAND latch is gated by NANDs, but a NOR latch is gated by ANDs, so
+    # requiring all four to match rejected every NOR-based gated latch.
     cores = _mutual_pairs(graph, ids)
     if len(cores) != 1:
         return None
     core = cores[0]
+    if any(graph[i]["cls"] != cls for i in core):
+        return None
     gating = [i for i in ids if i not in core]
     return (core, gating) if len(gating) == 2 else None
 

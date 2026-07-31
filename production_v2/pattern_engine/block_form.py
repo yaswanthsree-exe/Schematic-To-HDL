@@ -45,6 +45,16 @@ DEVICE_TABLE: Dict[str, Tuple[str, List[str], List[str]]] = {
     "T":   ("TFF_BLOCK",  ["T", "CLK"],           ["Q", "Qbar"]),
 }
 
+#: Level-sensitive counterparts, selected when the box says LATCH.
+#: A latch is transparent while its enable is high; a flip-flop samples on an
+#: edge.  Mapping both onto the flip-flop class emitted `always @(posedge CLK)`
+#: for a box clearly labelled "D LATCH" -- different hardware, no warning.
+#: The enable pin is named EN rather than CLK for the same reason.
+LATCH_TABLE: Dict[str, Tuple[str, List[str], List[str]]] = {
+    "SR": ("SRLATCH_BLOCK", ["S", "R", "EN"], ["Q", "Qbar"]),
+    "D":  ("DLATCH_BLOCK",  ["D", "EN"],      ["Q", "Qbar"]),
+}
+
 #: Async control pins, recognised wherever they appear on the box.
 ASYNC_PINS = {"PR", "PRE", "PRESET", "SET", "CLR", "CLEAR", "RST", "RESET"}
 
@@ -115,11 +125,25 @@ def classify_device(tokens: List[str]) -> Optional[Tuple[str, str]]:
     for t in norm:
         if t.endswith("TYPE") and len(t) > 4:
             variants.add(t[:-4])
+    is_latch = "LATCH" in joined
     for key in ("JK", "SR", "D", "T"):
         if key in variants or (len(key) == 2 and key in joined):
-            cls = DEVICE_TABLE[key][0]
-            kind = "LATCH" if "LATCH" in joined else "FLIP FLOP"
-            return cls, f"{key} {kind}"
+            # A latch is level-sensitive, so it gets its own class where one
+            # exists.  JK and T have no meaningful level-sensitive form (both
+            # depend on the previous state, which a transparent latch cannot
+            # hold), so they stay edge-triggered even if the drawing says
+            # "latch".
+            table = LATCH_TABLE if (is_latch and key in LATCH_TABLE) else DEVICE_TABLE
+            return table[key][0], f"{key} {'LATCH' if is_latch else 'FLIP FLOP'}"
+    return None
+
+
+def pins_for(cls: str) -> Optional[Tuple[List[str], List[str]]]:
+    """Canonical (inputs, outputs) for a macro class, latch or flip-flop."""
+    for table in (DEVICE_TABLE, LATCH_TABLE):
+        for _key, (c, ins, outs) in table.items():
+            if c == cls:
+                return list(ins), list(outs)
     return None
 
 
@@ -219,7 +243,10 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
             continue
         cls, name = device
         key = name.split()[0]
-        canon_in, canon_out = DEVICE_TABLE[key][1], DEVICE_TABLE[key][2]
+        # Pins come from whichever table the class actually belongs to, so a
+        # latch gets EN rather than CLK.
+        canon = pins_for(cls) or (DEVICE_TABLE[key][1], DEVICE_TABLE[key][2])
+        canon_in, canon_out = canon
 
         found_async = [t for _s, t in edge_labels if t in ASYNC_PINS]
         inputs = list(canon_in) + [t for t in dict.fromkeys(found_async)]

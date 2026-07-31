@@ -64,7 +64,9 @@ def test_classifies_sr_flip_flop():
 
 def test_classifies_jk_and_d_and_t():
     assert classify_device(["JK", "FLIP", "FLOP"])[0] == "JKFF_BLOCK"
-    assert classify_device(["D", "LATCH"])[0] == "DFF_BLOCK"
+    # A latch is level-sensitive and gets its own class -- mapping it onto the
+    # flip-flop emitted `always @(posedge CLK)` for a box labelled "D LATCH".
+    assert classify_device(["D", "LATCH"])[0] == "DLATCH_BLOCK"
     assert classify_device(["T", "FLIP", "FLOP"])[0] == "TFF_BLOCK"
 
 
