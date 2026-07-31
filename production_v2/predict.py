@@ -131,6 +131,7 @@ FILL_FRAC_MIN    = 0.20  # box must be this filled before its class is re-read
 FILL_REFINE_IOU  = 0.50  # stripped detection must overlap the original box
 FILL_REFINE_CONF = 0.50  # and be at least this confident to override
 
+
 # ── Fused-X (bowtie) crossing repair ──────────────────────────────────────────
 X_BRIDGE_MAX_LEN = 25.0   # max stub joining the two halves of a fused crossing
 X_PAIR_DOT_MAX   = -0.5   # arm pair must be this opposite to count as through

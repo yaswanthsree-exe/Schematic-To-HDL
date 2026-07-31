@@ -117,6 +117,35 @@ styles. Each new file needs a synthetic-graph test.
 **Effort:** days. **Risk:** none — additive, and the corpus guards against false
 positives.
 
+### B2a. Inversion bubbles missed on pale symbols *(open — one attempt reverted)*
+
+`AND` and `NAND` differ by the small circle on the output, and the detector
+loses it on low-contrast or filled symbols. Measured: **three of four NANDs
+read as `AND`** on `sequential_corpus/images/images (4).png`, and one of four on
+`images (8).png`. Wrong class means wrong HDL, silently — B-severity in
+appearance, A-severity in effect.
+
+**Attempted and reverted:** detect the bubble geometrically as a small enclosed
+white region beside the output, sealing the anti-aliased gaps with a
+morphological close first (without sealing, nothing is ever enclosed). Applied
+one-way, adding inversion only when a bubble was positively seen, never
+removing it.
+
+It worked where it fired — `images (6).png` and `images (3).jpg` scored
+perfectly, ANDs clean and NORs detected, and it corrected the misread gate in
+`images (8).png`. **But it corrupted 25 combinational corpus images.** The
+search window includes part of the gate's own rounded body, which becomes an
+enclosed region once sealed, so plain ANDs were promoted to NANDs. On the half
+subtractor it turned `Borrow = (~A) & B` into `~((~A) & B)`.
+
+Propagation count stayed at 749 throughout — this defect is invisible to that
+metric, which is why per-image gate classes have to be compared.
+
+**Recommended fix:** constrain the window to exclude the gate body — anchor it
+on the output pin position from `PIN_FRACS` rather than a fraction of the box,
+and require the enclosed region to sit clear of the body outline. Then
+re-validate against the combinational corpus **by gate class, not propagations**.
+
 ### B3. Only four block device types
 
 `SR`, `JK`, `D`, `T` (plus the two latch variants). No counters, registers,
