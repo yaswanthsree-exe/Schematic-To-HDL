@@ -83,42 +83,89 @@ def _too_many_fanning_outputs(graph: GateGraph, mapping: Dict[str, str],
     return len(fanning) > 1
 
 
-def _external_source(graph: GateGraph, gid: str, pin: int,
-                     inside: Set[str]) -> Optional[str]:
-    """Resolve one attach point to the external signal driving it.
+def _external_inputs(graph: GateGraph, gid: str, inside: Set[str]) -> List[str]:
+    """Sources driving *gid* from outside the match, in pin order."""
+    return [s for s in graph[gid].get("inputs", ()) if s not in inside]
 
-    For a commutative target the declared pin is nominal, so the attach point
-    resolves to that node's unique external input; ambiguity (zero or two or
-    more external inputs) rejects the match.  For a non-commutative target the
-    declared pin is exact.
+
+def _attach_candidates(graph: GateGraph, gid: str, pin: int,
+                       inside: Set[str]) -> Optional[Set[str]]:
+    """Which external sources could satisfy one attach point.
+
+    A commutative gate has no meaningful pin order, so ANY of its external
+    inputs is a candidate and the choice is settled later by the assignment.
+    A non-commutative gate pins the answer down exactly.
     """
     ins = list(graph[gid].get("inputs", ()))
     if graph[gid]["cls"] in COMMUTATIVE:
-        external = [s for s in ins if s not in inside]
-        return external[0] if len(external) == 1 else None
+        return set(_external_inputs(graph, gid, inside)) or None
     if pin >= len(ins):
         return None
     src = ins[pin]
-    return None if src in inside else src
+    return None if src in inside else {src}
 
 
 def _bind_ports(graph: GateGraph, mapping: Dict[str, str],
                 pattern: Pattern) -> Optional[Dict[str, str]]:
+    """Assign every declared input port to a distinct external source.
+
+    This is an assignment problem, not a lookup.  A clocked device puts several
+    external signals on one gate -- a JK's input NAND takes J, CLK and the Qbar
+    feedback -- so "the external input of this node" is not well defined.  Each
+    port instead gets a candidate set (intersected across its attach points, so
+    a port touching two gates must resolve to a source common to both, which is
+    exactly what identifies a shared clock), and backtracking finds a
+    consistent choice.  Most-constrained port first, candidates in sorted
+    order, so the result is deterministic.
+
+    Every external input must end up claimed by some port.  Without that a
+    latch with an async reset would match the plain latch pattern and the
+    emitted HDL would silently drop the reset.
+    """
     inside = set(mapping.values())
-    bound: Dict[str, str] = {}
+
+    cand: List[Tuple[str, Set[str]]] = []
     for port in pattern.inputs:
-        resolved: Set[str] = set()
+        allowed: Optional[Set[str]] = None
         for local, pin in port.attach:
-            src = _external_source(graph, mapping[local], pin, inside)
-            if src is None:
+            here = _attach_candidates(graph, mapping[local], pin, inside)
+            if not here:
                 return None
-            resolved.add(src)
-        if len(resolved) != 1:          # attach points disagree
-            return None
-        bound[port.name] = resolved.pop()
-    if not pattern.allow_shared_inputs and len(set(bound.values())) != len(bound):
+            allowed = here if allowed is None else (allowed & here)
+            if not allowed:
+                return None            # attach points cannot agree
+        cand.append((port.name, allowed or set()))
+
+    order = sorted(range(len(cand)), key=lambda i: (len(cand[i][1]), cand[i][0]))
+    bound: Dict[str, str] = {}
+    used: Set[str] = set()
+
+    def _solve(k: int) -> bool:
+        if k == len(order):
+            return True
+        name, choices = cand[order[k]]
+        for src in sorted(choices):
+            if not pattern.allow_shared_inputs and src in used:
+                continue
+            bound[name] = src
+            used.add(src)
+            if _solve(k + 1):
+                return True
+            del bound[name]
+            used.discard(src)
+        return False
+
+    if not _solve(0):
         return None
-    return bound
+
+    if not pattern.allow_unbound_inputs:
+        claimed = set(bound.values())
+        for gid in inside:
+            for src in _external_inputs(graph, gid, inside):
+                if src not in claimed:
+                    return None        # an undeclared signal would be dropped
+
+    return dict(bound)
 
 
 def candidates(graph: GateGraph, pattern: Pattern) -> List[Match]:
@@ -130,14 +177,16 @@ def candidates(graph: GateGraph, pattern: Pattern) -> List[Match]:
                              node_match=_node_match,
                              edge_match=_edge_match)
 
-    found: List[Match] = []
-    seen: Set[frozenset] = set()
+    # A symmetric pattern yields SEVERAL valid isomorphisms over the same set
+    # of gates -- a cross-coupled pair can be mapped either way round.  Keeping
+    # whichever VF2 happened to emit first made port binding vary between runs
+    # (a JK emitted `case ({J, K})` or `case ({K, J})` at random), so the
+    # generated HDL was not reproducible.  Collect every accepted isomorphism
+    # per gate set and keep a canonical one.
+    by_nodes: Dict[frozenset, List[Match]] = {}
 
     for iso in matcher.subgraph_isomorphisms_iter():
         mapping = {local: gid for gid, local in iso.items()}
-        key = frozenset(mapping.values())
-        if key in seen:
-            continue
         if _escapes(graph, mapping, pattern):
             continue
         if _too_many_fanning_outputs(graph, mapping, pattern):
@@ -145,13 +194,17 @@ def candidates(graph: GateGraph, pattern: Pattern) -> List[Match]:
         bound = _bind_ports(graph, mapping, pattern)
         if bound is None:
             continue
-        seen.add(key)
-        found.append(Match(
+        by_nodes.setdefault(frozenset(mapping.values()), []).append(Match(
             pattern=pattern,
             mapping=mapping,
             inputs=bound,
             outputs={p.name: mapping[p.node] for p in pattern.outputs},
         ))
 
+    def _canonical(m: Match) -> tuple:
+        return (tuple(sorted(m.mapping.items())),
+                tuple(sorted(m.inputs.items())))
+
+    found = [min(ms, key=_canonical) for ms in by_nodes.values()]
     found.sort(key=lambda m: tuple(sorted(m.nodes)))
     return found

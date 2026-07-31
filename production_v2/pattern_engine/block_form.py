@@ -1,0 +1,179 @@
+"""Recognition of BLOCK-FORM devices: a labelled box instead of gates.
+
+Textbooks often draw a flip-flop as a rectangle with its name written inside
+and its pins labelled around the edge.  There are no gate symbols at all, so
+the YOLO detector finds nothing and the whole gate/wire pipeline produces an
+empty graph -- the device is unreadable to Part 1 even though it is the
+easiest case for a human, because the answer is written on it.
+
+This module takes the other route: find the box, read what is written inside,
+and emit the corresponding macro node directly.  It is deliberately separate
+from the gate path -- nothing here touches predict.py's detection or tracing.
+
+Detection uses the box's ENCLOSED INTERIOR rather than its outline.  An
+outline contour merges with the pin stubs poking out of it (measured: one
+contour, 15 vertices, 53% rectangular fill), whereas the interior is a clean
+enclosed white region that does not touch the image border.  On a real block
+symbol that region fills 94% of its bounding box; the wiring loops of a
+gate-level schematic reach only ~72%, which separates the two cleanly.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+#: Minimum interior-fill ratio for a region to count as a drawn box.
+#: Measured: block symbol 0.94, gate-schematic wiring loops <= 0.72.
+BLOCK_FILL_MIN = 0.85
+
+#: Interior must be at least this fraction of the image, so stray enclosed
+#: specks (the hole in an 'o', a bubble on a gate) are never boxes.
+BLOCK_AREA_MIN_FRAC = 0.02
+
+#: How far outside the box edge a pin label may sit, as a fraction of box size.
+PIN_LABEL_MARGIN = 0.18
+
+#: Device name -> (macro class, canonical inputs, canonical outputs).
+#: Canonical pins are used when OCR cannot recover every label -- small edge
+#: text is the first thing to be missed, and a flip-flop's pin set is fixed by
+#: its type, so guessing it from the type is safer than dropping pins.
+DEVICE_TABLE: Dict[str, Tuple[str, List[str], List[str]]] = {
+    "SR":  ("SRFF_BLOCK", ["S", "R", "CLK"],      ["Q", "Qbar"]),
+    "JK":  ("JKFF_BLOCK", ["J", "K", "CLK"],      ["Q", "Qbar"]),
+    "D":   ("DFF_BLOCK",  ["D", "CLK"],           ["Q", "Qbar"]),
+    "T":   ("TFF_BLOCK",  ["T", "CLK"],           ["Q", "Qbar"]),
+}
+
+#: Async control pins, recognised wherever they appear on the box.
+ASYNC_PINS = {"PR", "PRE", "PRESET", "SET", "CLR", "CLEAR", "RST", "RESET"}
+
+#: Tokens that name the device kind rather than a pin.
+_KIND_WORDS = {"FLIP", "FLOP", "FLIPFLOP", "LATCH", "FF"}
+
+
+@dataclass
+class Block:
+    """One recognised block-form device."""
+    cls:     str
+    bbox:    Tuple[int, int, int, int]          # x, y, w, h
+    name:    str                                 # e.g. "SR FLIP FLOP"
+    inputs:  List[str] = field(default_factory=list)
+    outputs: List[str] = field(default_factory=list)
+
+    def to_graph_node(self) -> Dict[str, Any]:
+        return {"cls": self.cls, "inputs": list(self.inputs),
+                "outputs": list(self.outputs), "block": self.name}
+
+
+def find_box_interiors(gray, fill_min: float = BLOCK_FILL_MIN,
+                       area_min_frac: float = BLOCK_AREA_MIN_FRAC
+                       ) -> List[Tuple[int, int, int, int]]:
+    """Bounding boxes of enclosed, near-rectangular white regions.
+
+    Takes a grayscale image; returns (x, y, w, h) of each box INTERIOR.
+    """
+    import cv2
+    import numpy as np
+
+    h_img, w_img = gray.shape[:2]
+    ink = (gray < 128).astype(np.uint8)
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(1 - ink, 4)
+
+    out: List[Tuple[int, int, int, int]] = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if area < area_min_frac * h_img * w_img:
+            continue
+        if x <= 0 or y <= 0 or x + w >= w_img or y + h >= h_img:
+            continue                       # open region, not an enclosed box
+        if w * h == 0 or area / float(w * h) < fill_min:
+            continue                       # not rectangular enough
+        out.append((int(x), int(y), int(w), int(h)))
+    out.sort(key=lambda b: -b[2] * b[3])
+    return out
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^A-Z0-9']", "", text.upper())
+
+
+def classify_device(tokens: List[str]) -> Optional[Tuple[str, str]]:
+    """Map the words written inside a box to (macro class, device name).
+
+    Requires a KIND word ("FLIP FLOP" / "LATCH") alongside the type letters:
+    an "S" and an "R" floating in a box are pin labels, not a device name, and
+    without this a box of unrelated text would be read as a flip-flop.
+    """
+    norm = [_norm(t) for t in tokens]
+    joined = "".join(norm)
+    if not any(k in joined for k in _KIND_WORDS):
+        return None
+    for key in ("JK", "SR", "D", "T"):
+        if key in norm or (len(key) == 2 and key in joined):
+            cls = DEVICE_TABLE[key][0]
+            kind = "LATCH" if "LATCH" in joined else "FLIP FLOP"
+            return cls, f"{key} {kind}"
+    return None
+
+
+def _side_of(cx: float, cy: float, box: Tuple[int, int, int, int]) -> str:
+    x, y, w, h = box
+    dl, dr = abs(cx - x), abs(cx - (x + w))
+    dt, db = abs(cy - y), abs(cy - (y + h))
+    return ["left", "right", "top", "bottom"][
+        [dl, dr, dt, db].index(min(dl, dr, dt, db))]
+
+
+def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN
+                    ) -> List[Block]:
+    """Build Block records from a grayscale image plus OCR output.
+
+    *ocr_results* is EasyOCR's shape: a list of (polygon, text, confidence).
+    Kept as a parameter rather than run here so this module has no OCR or
+    model dependency and stays unit-testable.
+    """
+    blocks: List[Block] = []
+    for box in find_box_interiors(gray, fill_min=fill_min):
+        x, y, w, h = box
+        mx, my = PIN_LABEL_MARGIN * w, PIN_LABEL_MARGIN * h
+
+        inside_words: List[str] = []
+        edge_labels: List[Tuple[str, str]] = []          # (side, text)
+        for poly, text, _conf in ocr_results:
+            cx = sum(p[0] for p in poly) / len(poly)
+            cy = sum(p[1] for p in poly) / len(poly)
+            if not (x - mx <= cx <= x + w + mx and y - my <= cy <= y + h + my):
+                continue
+            token = _norm(text)
+            if not token:
+                continue
+            near_edge = (cx < x + mx or cx > x + w - mx
+                         or cy < y + my or cy > y + h - my)
+            if near_edge:
+                edge_labels.append((_side_of(cx, cy, box), token))
+            else:
+                inside_words.append(token)
+
+        # A device word sitting near an edge still names the device.
+        device = (classify_device(inside_words)
+                  or classify_device(inside_words + [t for _s, t in edge_labels]))
+        if device is None:
+            continue
+        cls, name = device
+        key = name.split()[0]
+        canon_in, canon_out = DEVICE_TABLE[key][1], DEVICE_TABLE[key][2]
+
+        found_async = [t for _s, t in edge_labels if t in ASYNC_PINS]
+        inputs = list(canon_in) + [t for t in dict.fromkeys(found_async)]
+        blocks.append(Block(cls=cls, bbox=box, name=name,
+                            inputs=inputs, outputs=list(canon_out)))
+    return blocks
+
+
+def graph_from_blocks(blocks: List[Block]) -> Dict[str, Dict[str, Any]]:
+    """A gate-graph dict containing one node per recognised block."""
+    graph: Dict[str, Dict[str, Any]] = {}
+    for i, b in enumerate(blocks, 1):
+        graph[f"B{i}"] = b.to_graph_node()
+    return graph

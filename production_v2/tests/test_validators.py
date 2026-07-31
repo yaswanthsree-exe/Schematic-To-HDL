@@ -26,8 +26,19 @@ def sr_graph():
     }
 
 
-def test_both_validators_registered():
-    assert set(VALIDATORS) == {"truth_table", "sr_latch_nor"}
+def test_required_validators_registered():
+    """Asserted as a subset, not an exact set: the registry grows as patterns
+    are added, and pinning the exact contents makes every new pattern break an
+    unrelated test."""
+    assert {"truth_table", "sr_latch_nor", "sr_latch_nand",
+            "gated_sr_latch_nand", "jk_flipflop"} <= set(VALIDATORS)
+
+
+def test_every_pattern_names_a_registered_validator():
+    """A typo in a pattern file must be caught here rather than at match time."""
+    from pattern_engine.library import load_library
+    for p in load_library():
+        assert p.validator in VALIDATORS, f"{p.name} -> {p.validator}"
 
 
 def test_real_xor_passes_truth_table():

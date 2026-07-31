@@ -15,6 +15,27 @@ from predict import (CircuitResult, find_best_model, predict_circuit,
                      find_gate_classifier, load_gate_classifier)
 from hdl_gen import generate_all
 from pattern_engine import compress
+from pattern_engine.block_form import blocks_from_ocr, graph_from_blocks
+
+
+def try_block_form(image_path):
+    """Recognise a flip-flop drawn as a labelled box, when no gates were found.
+
+    Runs only on the empty-graph path, so the ordinary gate pipeline is never
+    affected.  OCR is imported lazily -- this keeps the block module itself
+    dependency-free and unit-testable.
+    """
+    try:
+        import cv2
+        import easyocr
+        gray = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            return {}
+        reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        results = reader.readtext(cv2.imread(image_path))
+        return graph_from_blocks(blocks_from_ocr(gray, results))
+    except Exception:
+        return {}
 
 st.set_page_config(page_title="Schematic → Netlist → HDL",
                    page_icon="⚡", layout="wide",
@@ -149,10 +170,24 @@ st.markdown('<span class="stage">STAGE 3</span> **Netlist → Synthesizable HDL*
             unsafe_allow_html=True)
 
 if not result.graph:
-    st.warning("No gate graph extracted — cannot generate HDL.")
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-    st.stop()
+    # No gates found.  Before giving up, try the block-form path: a flip-flop
+    # drawn as a labelled box has no gate symbols at all, so the detector
+    # legitimately finds nothing even though the device is fully identifiable
+    # from the text written inside it.
+    block_graph = try_block_form(tmp_path)
+    if block_graph:
+        names = ", ".join(n.get("block", n["cls"]) for n in block_graph.values())
+        st.info(f"🔲 No gate symbols found, but recognized a block-form "
+                f"device: **{names}**")
+        result.graph = block_graph
+        for node in block_graph.values():
+            result.global_inputs.update(node["inputs"])
+            result.global_outputs.update(node["outputs"])
+    else:
+        st.warning("No gate graph extracted — cannot generate HDL.")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        st.stop()
 
 # ── Stage 2.5: functional pattern recognition ────────────────────────────────
 with st.spinner("Recognizing functional blocks…"):

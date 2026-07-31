@@ -49,9 +49,14 @@ def _apply(graph: GateGraph, match: Match, macro_id: str) -> GateGraph:
 
     children = {gid: copy.deepcopy(graph[gid]) for gid in sorted(absorbed)}
 
+    # Deduplicated: several ports may name the SAME node -- a master-slave DFF
+    # takes both Q and Qbar off its slave stage -- and without this the macro
+    # reports that node's primary outputs once per port.
     primary_outputs: List[str] = []
     for port in pattern.outputs:
-        primary_outputs.extend(graph[match.outputs[port.name]].get("outputs", ()))
+        for net in graph[match.outputs[port.name]].get("outputs", ()):
+            if net not in primary_outputs:
+                primary_outputs.append(net)
 
     new: GateGraph = {}
     for gid, node in graph.items():
@@ -93,7 +98,20 @@ def compress(graph: GateGraph,
     for _ in range(max_passes):
         passes += 1
         changed = False
-        for pattern in sorted(library, key=lambda p: (p.level, p.name)):
+        # HIGHEST level first: the most specific pattern wins.
+        #
+        # The original design took the smallest first, on the reasoning that
+        # primitives should be recognised before the composites built from
+        # them.  That holds only if composite patterns are written in terms of
+        # macro nodes.  These patterns are flat -- a JK lists all four of its
+        # NANDs -- so smallest-first lets the bare latch pattern consume the
+        # JK's core two gates, after which the JK can never match and the
+        # result is "an SR latch plus two loose NANDs" instead of a JK.
+        #
+        # Flat patterns are deliberate: composing hierarchically would need a
+        # macro to expose Q *and* Qbar to outside gates, which the graph
+        # contract cannot express (a gate's output is named by its id alone).
+        for pattern in sorted(library, key=lambda p: (-p.level, p.name)):
             while True:
                 accepted: Optional[Match] = None
                 for match in candidates(current, pattern):

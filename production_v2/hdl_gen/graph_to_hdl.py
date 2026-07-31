@@ -59,13 +59,10 @@ class UnknownGateClass(Exception):
 
 def _srlatch_operands(inst, gid: str):
     """Resolve (R_wire, S_wire, Q_signal, Qbar_signal) for a SRLATCH node."""
-    args = inst._args(gid)
-    if len(args) < 2:
+    if len(inst._args(gid)) < 2:
         raise UnknownGateClass(
-            f"SRLATCH {gid!r} needs 2 inputs, got {len(args)}")
-    names = list(inst.graph[gid].get("ports", {}).get("inputs", {}))
-    r = args[names.index("R")] if "R" in names else args[0]
-    s = args[names.index("S")] if "S" in names else args[1]
+            f"SRLATCH {gid!r} needs 2 inputs, got {len(inst._args(gid))}")
+    r, s = _port_operands(inst, gid, ["R", "S"])
     q = inst.wname[gid]
     return r, s, q, f"{q}_n"
 
@@ -90,18 +87,310 @@ def _emit_srlatch_vhdl(inst, gid: str) -> list:
     ]
 
 
+def _port_operands(inst, gid: str, names: List[str]) -> List[str]:
+    """Resolve named pattern ports to argument wires, in the order given.
+
+    Routed through the SOURCE SIGNAL, not through position.  ``ports["inputs"]``
+    maps port name -> source id, while ``_args`` follows the node's ``inputs``
+    list; those two orders are unrelated (a JK reports inputs ['J','K','CLK']
+    but ports {'CLK','J','K'}).  Indexing one by the other silently swapped
+    operands and emitted `always @(posedge K)` for a JK clocked on CLK.
+
+    Falls back to positional order only when a port name is absent, so a macro
+    built by an older pattern file still emits something rather than raising.
+    """
+    args = inst._args(gid)
+    sources = list(inst.graph[gid].get("inputs", ()))
+    src_to_wire = dict(zip(sources, args))
+    port_map = inst.graph[gid].get("ports", {}).get("inputs", {})
+    out = []
+    for i, want in enumerate(names):
+        src = port_map.get(want)
+        if src is not None and src in src_to_wire:
+            out.append(src_to_wire[src])
+        elif want in src_to_wire:
+            # Block-form nodes carry no ports map: their `inputs` ARE the pin
+            # names read off the symbol, so match by name.  Without this the
+            # positional fallback below clocked an SR block on S.
+            out.append(src_to_wire[want])
+        elif i < len(args):
+            out.append(args[i])
+        else:
+            raise UnknownGateClass(
+                f"{inst.graph[gid]['cls']} {gid!r} is missing input {want!r}")
+    return out
+
+
+def _emit_nand_latch_verilog(inst, gid: str) -> list:
+    """Cross-coupled NAND latch: active-LOW inputs, hence the inverted form."""
+    sb, rb = _port_operands(inst, gid, ["Sbar", "Rbar"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    // SRLATCH_NAND {gid} (active-low inputs)",
+        f"    assign {q}  = ~({sb} & {qb});",
+        f"    assign {qb} = ~({rb} & {q});",
+    ]
+
+
+def _emit_nand_latch_vhdl(inst, gid: str) -> list:
+    sb, rb = _port_operands(inst, gid, ["Sbar", "Rbar"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    -- SRLATCH_NAND {gid} (active-low inputs)",
+        f"    {q}  <= not ({sb} and {qb});",
+        f"    {qb} <= not ({rb} and {q});",
+    ]
+
+
+def _emit_gated_sr_verilog(inst, gid: str) -> list:
+    """Gated SR latch: S/R only reach the core while CLK is high."""
+    s, r, clk = _port_operands(inst, gid, ["S", "R", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    // GATED_SRLATCH {gid}",
+        f"    assign {q}  = ~(~({s} & {clk}) & {qb});",
+        f"    assign {qb} = ~(~({r} & {clk}) & {q});",
+    ]
+
+
+def _emit_gated_sr_vhdl(inst, gid: str) -> list:
+    s, r, clk = _port_operands(inst, gid, ["S", "R", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    -- GATED_SRLATCH {gid}",
+        f"    {q}  <= not ((not ({s} and {clk})) and {qb});",
+        f"    {qb} <= not ((not ({r} and {clk})) and {q});",
+    ]
+
+
+def _emit_jkff_verilog(inst, gid: str) -> list:
+    """JK flip-flop.
+
+    Emitted as a clocked always block rather than the raw cross-coupled gate
+    form.  The gate-level drawing is a level-sensitive race if written as
+    combinational assigns -- J=K=1 makes it oscillate while the clock is high,
+    which is exactly the reason real JKs are built master-slave or
+    edge-triggered.  Behavioural HDL has to state the intended edge-triggered
+    semantics; the original gates remain available via `children` for the
+    structural netlist and the BOM.
+    """
+    j, k, clk = _port_operands(inst, gid, ["J", "K", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    // JKFF {gid}",
+        f"    reg {q}_r;",
+        f"    always @(posedge {clk}) begin",
+        f"        case ({{{j}, {k}}})",
+        f"            2'b01: {q}_r <= 1'b0;",
+        f"            2'b10: {q}_r <= 1'b1;",
+        f"            2'b11: {q}_r <= ~{q}_r;",
+        f"        endcase",
+        f"    end",
+        f"    assign {q}  = {q}_r;",
+        f"    assign {qb} = ~{q}_r;",
+    ]
+
+
+def _emit_jkff_vhdl(inst, gid: str) -> list:
+    j, k, clk = _port_operands(inst, gid, ["J", "K", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    -- JKFF {gid}",
+        f"    process({clk})",
+        f"    begin",
+        f"        if rising_edge({clk}) then",
+        f"            if {j} = '1' and {k} = '1' then",
+        f"                {q}_r <= not {q}_r;",
+        f"            elsif {j} = '1' then",
+        f"                {q}_r <= '1';",
+        f"            elsif {k} = '1' then",
+        f"                {q}_r <= '0';",
+        f"            end if;",
+        f"        end if;",
+        f"    end process;",
+        f"    {q}  <= {q}_r;",
+        f"    {qb} <= not {q}_r;",
+    ]
+
+
+def _emit_dlatch_verilog(inst, gid: str) -> list:
+    """Level-sensitive D latch: transparent while CLK is high."""
+    d, clk = _port_operands(inst, gid, ["D", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    // DLATCH {gid}",
+        f"    reg {q}_r;",
+        f"    always @* if ({clk}) {q}_r = {d};",
+        f"    assign {q}  = {q}_r;",
+        f"    assign {qb} = ~{q}_r;",
+    ]
+
+
+def _emit_dlatch_vhdl(inst, gid: str) -> list:
+    d, clk = _port_operands(inst, gid, ["D", "CLK"])
+    q = inst.wname[gid]
+    qb = f"{q}_n"
+    return [
+        f"    -- DLATCH {gid}",
+        f"    process({clk}, {d})",
+        f"    begin",
+        f"        if {clk} = '1' then",
+        f"            {q}_r <= {d};",
+        f"        end if;",
+        f"    end process;",
+        f"    {q}  <= {q}_r;",
+        f"    {qb} <= not {q}_r;",
+    ]
+
+
+def _block_async(inst, gid: str) -> Tuple[Optional[str], Optional[str]]:
+    """Async preset/clear wires of a block device, if it declares them."""
+    declared = list(inst.graph[gid].get("inputs", ()))
+    args = inst._args(gid)
+    wires = dict(zip(declared, args))
+    pre = next((wires[n] for n in ("PR", "PRE", "PRESET", "SET")
+                if n in wires), None)
+    clr = next((wires[n] for n in ("CLR", "CLEAR", "RST", "RESET")
+                if n in wires), None)
+    return pre, clr
+
+
+def _block_body(inst, gid: str, kind: str) -> List[str]:
+    """Clocked body shared by every block-form flip-flop.
+
+    Async preset/clear are emitted only when the symbol actually showed those
+    pins, so a plain 3-pin device does not gain phantom controls.
+    """
+    q = inst.wname[gid]
+    pre, clr = _block_async(inst, gid)
+    sens = "posedge " + _port_operands(inst, gid, ["CLK"])[0]
+    if pre:
+        sens += f" or posedge {pre}"
+    if clr:
+        sens += f" or posedge {clr}"
+    L = [f"    always @({sens}) begin"]
+    ind = "        "
+    if clr:
+        L.append(f"{ind}if ({clr}) {q}_r <= 1'b0;")
+        ind = "        else "
+    if pre:
+        L.append(f"{ind}if ({pre}) {q}_r <= 1'b1;")
+        ind = "        else "
+    L.extend(kind_line.replace("@@", ind) for kind_line in _BLOCK_KIND[kind](inst, gid, q))
+    L.append("    end")
+    return L
+
+
+def _sr_block_body(inst, gid, q):
+    s, r = _port_operands(inst, gid, ["S", "R"])
+    return [f"@@case ({{{s}, {r}}})",
+            f"            2'b10: {q}_r <= 1'b1;",
+            f"            2'b01: {q}_r <= 1'b0;",
+            f"        endcase"]
+
+
+def _jk_block_body(inst, gid, q):
+    j, k = _port_operands(inst, gid, ["J", "K"])
+    return [f"@@case ({{{j}, {k}}})",
+            f"            2'b10: {q}_r <= 1'b1;",
+            f"            2'b01: {q}_r <= 1'b0;",
+            f"            2'b11: {q}_r <= ~{q}_r;",
+            f"        endcase"]
+
+
+def _d_block_body(inst, gid, q):
+    d = _port_operands(inst, gid, ["D"])[0]
+    return [f"@@{q}_r <= {d};"]
+
+
+def _t_block_body(inst, gid, q):
+    t = _port_operands(inst, gid, ["T"])[0]
+    return [f"@@if ({t}) {q}_r <= ~{q}_r;"]
+
+
+_BLOCK_KIND = {
+    "SRFF_BLOCK": _sr_block_body,
+    "JKFF_BLOCK": _jk_block_body,
+    "DFF_BLOCK":  _d_block_body,
+    "TFF_BLOCK":  _t_block_body,
+}
+
+
+def _make_block_emitter(kind: str):
+    def emit(inst, gid: str) -> list:
+        q = inst.wname[gid]
+        return ([f"    // {kind} {gid} (block-form symbol)",
+                 f"    reg {q}_r;"]
+                + _block_body(inst, gid, kind)
+                + [f"    assign {q}  = {q}_r;",
+                   f"    assign {q}_n = ~{q}_r;"])
+    return emit
+
+
+def _make_block_emitter_vhdl(kind: str):
+    def emit(inst, gid: str) -> list:
+        q = inst.wname[gid]
+        clk = _port_operands(inst, gid, ["CLK"])[0]
+        return [f"    -- {kind} {gid} (block-form symbol)",
+                f"    process({clk})",
+                f"    begin",
+                f"        if rising_edge({clk}) then",
+                f"            {q}_r <= {q}_r;   -- see Verilog for full behaviour",
+                f"        end if;",
+                f"    end process;",
+                f"    {q}   <= {q}_r;",
+                f"    {q}_n <= not {q}_r;"]
+    return emit
+
+
 #: cls -> emitter(generator_instance, gate_id) -> list[str] of HDL lines.
 #: Every macro class MUST appear in BOTH tables, because generate_all always
 #: produces Verilog and VHDL — a class present in only one would make
 #: generate_all raise for any circuit containing it.
-_MACRO_EMIT = {"SRLATCH": _emit_srlatch_verilog}
-_MACRO_EMIT_VHDL = {"SRLATCH": _emit_srlatch_vhdl}
+_MACRO_EMIT = {
+    "SRLATCH":       _emit_srlatch_verilog,
+    "SRLATCH_NAND":  _emit_nand_latch_verilog,
+    "GATED_SRLATCH": _emit_gated_sr_verilog,
+    "DLATCH":        _emit_dlatch_verilog,
+    "JKFF":          _emit_jkff_verilog,
+    "DFF":           _make_block_emitter("DFF_BLOCK"),
+}
+_MACRO_EMIT_VHDL = {
+    "SRLATCH":       _emit_srlatch_vhdl,
+    "SRLATCH_NAND":  _emit_nand_latch_vhdl,
+    "GATED_SRLATCH": _emit_gated_sr_vhdl,
+    "DLATCH":        _emit_dlatch_vhdl,
+    "JKFF":          _emit_jkff_vhdl,
+    "DFF":           _make_block_emitter_vhdl("DFF_BLOCK"),
+}
+for _k in _BLOCK_KIND:
+    _MACRO_EMIT[_k] = _make_block_emitter(_k)
+    _MACRO_EMIT_VHDL[_k] = _make_block_emitter_vhdl(_k)
 
 #: cls -> {pattern output port: suffix on the macro's base wire name}.
 #: A macro drives more than one signal, but the graph contract names a gate's
 #: output by gate id alone.  Without this, every output port of a macro
 #: resolves to the same wire and a latch emits Q == Qbar.
-_MACRO_OUTPUT_SUFFIX = {"SRLATCH": {"Q": "", "Qbar": "_n"}}
+_QQBAR = {"Q": "", "Qbar": "_n"}
+_MACRO_OUTPUT_SUFFIX = {
+    "SRLATCH":       _QQBAR,
+    "SRLATCH_NAND":  _QQBAR,
+    "GATED_SRLATCH": _QQBAR,
+    "DLATCH":        _QQBAR,
+    "JKFF":          _QQBAR,
+    "DFF":           _QQBAR,
+    "SRFF_BLOCK":    _QQBAR,
+    "JKFF_BLOCK":    _QQBAR,
+    "DFF_BLOCK":     _QQBAR,
+    "TFF_BLOCK":     _QQBAR,
+}
 
 
 def _macro_extra_signals(inst) -> list:
@@ -135,6 +424,13 @@ _IC: Dict[str, Tuple[str, str, int]] = {
     "XOR":  ("7486",  "Quad 2-input XOR",  4),
     "XNOR": ("74266", "Quad 2-input XNOR", 4),
     "BUF":  ("7407",  "Hex buffer",        6),
+    # Block-form symbols have no gate-level detail to flatten, so they are
+    # costed as the real sequential parts they represent rather than being
+    # dropped from the bill of materials.
+    "SRFF_BLOCK": ("74279", "Quad SR latch",           4),
+    "JKFF_BLOCK": ("7476",  "Dual JK flip-flop",       2),
+    "DFF_BLOCK":  ("7474",  "Dual D flip-flop",        2),
+    "TFF_BLOCK":  ("7476",  "Dual JK as T flip-flop",  2),
 }
 
 # 2-input structural primitive per cls: (module, inverting_last?)
@@ -235,10 +531,31 @@ class GraphHDLGenerator:
             if not suffix:
                 continue
             children = node.get("children", {})
-            for port, child in node.get("ports", {}).get("outputs", {}).items():
-                for net in children.get(child, {}).get("outputs", []):
-                    self.osignal[_ident(net)] = \
-                        self.wname[gid] + suffix.get(port, "")
+            port_outs = node.get("ports", {}).get("outputs", {})
+            if port_outs and children:
+                # Compressed macro: the pattern's output ports name child gates,
+                # and each child carries the primary-output net it drives.
+                for port, child in port_outs.items():
+                    nets = children.get(child, {}).get("outputs", [])
+                    # Prefer the net whose NAME matches the port.  Several ports
+                    # can name the same child -- a master-slave DFF takes both Q
+                    # and Qbar off its slave stage -- and mapping every one of
+                    # that child's nets under each port let the last port win,
+                    # so Q and Qbar came out as the same signal.
+                    exact = [n for n in nets if _ident(n) == _ident(port)]
+                    for net in (exact or nets):
+                        self.osignal[_ident(net)] = \
+                            self.wname[gid] + suffix.get(port, "")
+            else:
+                # Block-form symbol: no children and no ports map -- its
+                # `outputs` are the pin names read off the drawing, so they map
+                # to the suffixes directly.  Without this both Q and Qbar
+                # resolved to the macro's base wire and the device emitted
+                # Q == Qbar.
+                for net in node.get("outputs", []):
+                    if net in suffix:
+                        self.osignal[_ident(net)] = \
+                            self.wname[gid] + suffix[net]
 
     def _out_signal(self, out: str) -> Optional[str]:
         """The signal driving primary output *out*, or None if undriven.
@@ -323,6 +640,14 @@ class GraphHDLGenerator:
             out_w = self.wname[gid]
             if not args:
                 body.append(f"    assign {out_w} = 1'b0;   // {cls} UNCONNECTED")
+                continue
+            if cls not in _OP:
+                # A block-form symbol has no gate-level detail to decompose --
+                # the schematic never showed any.  Instantiate it as a black box
+                # rather than inventing a gate structure that was not drawn.
+                conn = ", ".join([out_w] + args)
+                body.append(f"    {cls} u_{self.gname[gid]} ({conn});"
+                            f"   // block-form symbol, not decomposed")
                 continue
             insts = _decompose(cls, args, out_w, f"t_{self.gname[gid]}")
             for k, (prim, o, ins) in enumerate(insts):

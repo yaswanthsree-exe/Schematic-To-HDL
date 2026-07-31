@@ -1,0 +1,21 @@
+{
+  "name":  "sr_latch_nand",
+  "cls":   "SRLATCH_NAND",
+  "level": 1,
+  "nodes": { "n1": "NAND", "n2": "NAND" },
+  "edges": [
+    {"from": "n1", "to": "n2", "pins": [1]},
+    {"from": "n2", "to": "n1", "pins": [1]}
+  ],
+  "ports": {
+    "inputs": [
+      {"name": "Sbar", "attach": [["n1", 0]]},
+      {"name": "Rbar", "attach": [["n2", 0]]}
+    ],
+    "outputs": [
+      {"name": "Q",    "node": "n1"},
+      {"name": "Qbar", "node": "n2"}
+    ]
+  },
+  "validator": "sr_latch_nand"
+}

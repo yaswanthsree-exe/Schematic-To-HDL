@@ -1,0 +1,24 @@
+{
+  "name":  "gated_sr_latch_nand",
+  "cls":   "GATED_SRLATCH",
+  "level": 2,
+  "nodes": { "g1": "NAND", "g2": "NAND", "n1": "NAND", "n2": "NAND" },
+  "edges": [
+    {"from": "g1", "to": "n1", "pins": [0]},
+    {"from": "g2", "to": "n2", "pins": [0]},
+    {"from": "n1", "to": "n2", "pins": [1]},
+    {"from": "n2", "to": "n1", "pins": [1]}
+  ],
+  "ports": {
+    "inputs": [
+      {"name": "S",   "attach": [["g1", 0]]},
+      {"name": "R",   "attach": [["g2", 0]]},
+      {"name": "CLK", "attach": [["g1", 1], ["g2", 1]]}
+    ],
+    "outputs": [
+      {"name": "Q",    "node": "n1"},
+      {"name": "Qbar", "node": "n2"}
+    ]
+  },
+  "validator": "gated_sr_latch_nand"
+}

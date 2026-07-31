@@ -1,0 +1,25 @@
+{
+  "name":  "master_slave_dff",
+  "cls":   "DFF",
+  "level": 4,
+  "nodes": {
+    "inv":    "NOT",
+    "master": "DLATCH",
+    "slave":  "DLATCH"
+  },
+  "edges": [
+    {"from": "master", "to": "slave", "pins": [0]},
+    {"from": "inv",    "to": "slave", "pins": [1]}
+  ],
+  "ports": {
+    "inputs": [
+      {"name": "D",   "attach": [["master", 0]]},
+      {"name": "CLK", "attach": [["master", 1], ["inv", 0]]}
+    ],
+    "outputs": [
+      {"name": "Q",    "node": "slave"},
+      {"name": "Qbar", "node": "slave"}
+    ]
+  },
+  "validator": "master_slave"
+}

@@ -24,11 +24,24 @@ def test_benchmark_graph_is_not_compressed():
     assert r.graph == g
 
 
-def test_benchmark_hdl_is_byte_identical_after_engine():
+def _without_timestamp(hdl: str) -> str:
+    """Drop the generated-on line.
+
+    generate_all stamps the current wall-clock time into the header, so two
+    calls that straddle a second boundary differ in that line alone.  Comparing
+    raw text made this test pass in isolation and fail inside the full suite,
+    purely on timing -- a flaky test that says nothing about the engine.
+    """
+    return "\n".join(ln for ln in hdl.splitlines()
+                     if not ln.startswith("// 2"))
+
+
+def test_benchmark_hdl_is_unchanged_after_engine():
     g = benchmark_20_combinational()
     before = generate_all(g, {"A", "B", "C"}, {"OUT_1"}, "bench")
     after = generate_all(compress(g).graph, {"A", "B", "C"}, {"OUT_1"}, "bench")
-    assert after["verilog_structural"] == before["verilog_structural"]
+    assert (_without_timestamp(after["verilog_structural"])
+            == _without_timestamp(before["verilog_structural"]))
     assert after["ic_bom"] == before["ic_bom"]
 
 

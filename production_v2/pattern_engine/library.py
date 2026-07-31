@@ -80,6 +80,7 @@ _SCHEMA: Dict[str, Any] = {
         "validator":           {"type": "string", "minLength": 1},
         "expected":            {"type": "string"},
         "allow_shared_inputs": {"type": "boolean"},
+        "allow_unbound_inputs": {"type": "boolean"},
     },
 }
 
@@ -115,6 +116,7 @@ class Pattern:
     validator:           str
     expected:            Optional[str] = None
     allow_shared_inputs: bool = False
+    allow_unbound_inputs: bool = False
 
     @property
     def node_map(self) -> Dict[str, str]:
@@ -170,6 +172,7 @@ def load_pattern(path: str) -> Pattern:
         validator=raw["validator"],
         expected=raw.get("expected"),
         allow_shared_inputs=raw.get("allow_shared_inputs", False),
+        allow_unbound_inputs=raw.get("allow_unbound_inputs", False),
     )
 
 
