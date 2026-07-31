@@ -1,0 +1,85 @@
+{
+  "_comment": "Ground truth for sequential schematics. 'expect' is the macro class the pattern engine should report. 'form' is gate (drawn from gate symbols) or block (labelled box). Read off each drawing by eye - NOT copied from tool output, so a regression cannot silently rewrite the target.",
+
+  "images (1).jpg": {
+    "form": "gate", "expect": ["SRLATCH"],
+    "desc": "cross-coupled NOR SR latch, coloured/filled gates"
+  },
+  "images.png": {
+    "form": "gate", "expect": ["GATED_SRLATCH"],
+    "desc": "clocked SR flip-flop: 2 AND gating a NOR latch"
+  },
+  "images (4).jpg": {
+    "form": "gate", "expect": ["GATED_SRLATCH"],
+    "desc": "enabled SR latch, AND gating a NOR latch (orange fill)"
+  },
+  "images (3).png": {
+    "form": "gate", "expect": ["DLATCH"],
+    "desc": "gated D latch: inverter + 2 AND + cross-coupled NOR"
+  },
+  "images (2).jpg": {
+    "form": "gate", "expect": ["DLATCH"],
+    "desc": "gated D latch, NAND form with inverter"
+  },
+  "images (4).png": {
+    "form": "gate", "expect": ["DLATCH"],
+    "desc": "gated D latch, NAND form with inverter"
+  },
+  "images (2).png": {
+    "form": "gate", "expect": ["JKFF"],
+    "desc": "JK flip-flop, 4 NAND with Q/Qbar feedback"
+  },
+  "images (3).jpg": {
+    "form": "gate", "expect": ["JKFF"],
+    "desc": "T flip-flop built from AND + cross-coupled NOR with feedback"
+  },
+  "images (6).png": {
+    "form": "gate", "expect": ["JKFF"],
+    "desc": "T flip-flop: AND gating NOR latch, T tied to both, feedback"
+  },
+  "images (8).png": {
+    "form": "gate", "expect": ["JKFF"],
+    "desc": "T flip-flop, 4 NAND with feedback"
+  },
+  "images (12).png": {
+    "form": "gate", "expect": ["DFF"],
+    "desc": "master-slave JK, gate level, colour-coded stages"
+  },
+  "images (13).png": {
+    "form": "gate", "expect": ["DFF"],
+    "desc": "master-slave JK flip-flop, gate level"
+  },
+  "images (5).jpg": {
+    "form": "gate", "expect": ["DFF"],
+    "desc": "pulse-triggered master-slave SR flip-flop with PRE/CLR"
+  },
+
+  "images (1).png": {
+    "form": "block", "expect": ["SRFF_BLOCK"],
+    "desc": "SR FLIP FLOP box with PR and CLR"
+  },
+  "images (5).png": {
+    "form": "block", "expect": ["DFF_BLOCK"],
+    "desc": "D-type flip-flop box with S and R"
+  },
+  "images (7).png": {
+    "form": "block", "expect": ["TFF_BLOCK"],
+    "desc": "T flip-flop box, pins only, no device name"
+  },
+  "images (9).png": {
+    "form": "block", "expect": ["JKFF_BLOCK"],
+    "desc": "JK box wired as T (T drives both J and K)"
+  },
+  "images (10).png": {
+    "form": "block", "expect": ["DLATCH_BLOCK", "DLATCH_BLOCK"],
+    "desc": "master-slave from two D latch boxes on complementary enables"
+  },
+  "images (11).png": {
+    "form": "block", "expect": ["JKFF_BLOCK", "JKFF_BLOCK"],
+    "desc": "master-slave JK from two JK boxes, inverter on slave clock"
+  },
+  "images (14).png": {
+    "form": "block", "expect": ["JKFF_BLOCK", "JKFF_BLOCK"],
+    "desc": "master-slave JK from two JK boxes with SET/CLR"
+  }
+}

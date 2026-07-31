@@ -155,10 +155,18 @@ _Q_TOKENS = {"Q", "Q'", "QBAR", "QN", "QB", "NQ"}
 #: "flip-flop" inside it.
 _PIN_SIGNATURES: List[Tuple[str, frozenset]] = [
     ("JK", frozenset({"J", "K"})),
+    # J and K appear on no other device in the table, so either one alone is
+    # decisive.  OCR drops one of them often enough to matter -- a master-slave
+    # JK pair came back with K and Q but no J, which matched nothing.
+    ("JK", frozenset({"J"})),
+    ("JK", frozenset({"K"})),
     ("SR", frozenset({"S", "R"})),
     ("D",  frozenset({"D"})),
     ("T",  frozenset({"T"})),
 ]
+
+#: Pin spellings for a level-sensitive enable.
+_EN_TOKENS = {"EN", "ENABLE", "G", "LE"}
 
 
 def classify_by_pins(tokens: List[str]) -> Optional[Tuple[str, str]]:
@@ -168,15 +176,23 @@ def classify_by_pins(tokens: List[str]) -> Optional[Tuple[str, str]]:
     triangle rather than the word CLK, so there is no name to read -- a T
     flip-flop came back as just T, Q and Q'.  The pin set is still decisive.
 
-    Requires a Q-like output so that arbitrary boxed text cannot qualify, and
-    is only ever consulted after the device-name reading fails.
+    An enable pin (EN) rather than a clock means the device is level-sensitive,
+    so it resolves to the latch class where one exists.  Without this a pair of
+    D latch boxes drawn as a master-slave stage were both read as edge-triggered
+    D flip-flops.
+
+    Requires a Q-like output so that arbitrary boxed text cannot qualify, and is
+    only ever consulted after the device-name reading fails.
     """
     norm = {_norm(t) for t in tokens}
     norm.discard("")
     if not (norm & _Q_TOKENS):
         return None
+    enabled = bool(norm & _EN_TOKENS)
     for key, pins in _PIN_SIGNATURES:
         if pins <= norm:
+            if enabled and key in LATCH_TABLE:
+                return LATCH_TABLE[key][0], f"{key} LATCH"
             return DEVICE_TABLE[key][0], f"{key} FLIP FLOP"
     return None
 
@@ -204,8 +220,27 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
     missed, which left nothing to classify.  Re-reading only the box, enlarged,
     recovers them.  Results from both passes are merged.
     """
+    found_boxes = find_box_interiors(gray, fill_min=fill_min)
+
+    def _nearest_box(cx: float, cy: float):
+        """Which box a label belongs to -- the closest one, exclusively.
+
+        Without this, a label is claimed by every box whose margin it falls in.
+        The gap between two adjacent symbols is itself an enclosed rectangular
+        region, so it qualifies as a box and then borrows its neighbours' pin
+        letters, inventing a third device that was never drawn.
+        """
+        best, best_d = None, None
+        for bx, by, bw, bh in found_boxes:
+            dx = max(bx - cx, 0, cx - (bx + bw))
+            dy = max(by - cy, 0, cy - (by + bh))
+            d = dx * dx + dy * dy
+            if best_d is None or d < best_d:
+                best, best_d = (bx, by, bw, bh), d
+        return best
+
     blocks: List[Block] = []
-    for box in find_box_interiors(gray, fill_min=fill_min):
+    for box in found_boxes:
         x, y, w, h = box
         mx, my = PIN_LABEL_MARGIN * w, PIN_LABEL_MARGIN * h
 
@@ -223,6 +258,8 @@ def blocks_from_ocr(gray, ocr_results, fill_min: float = BLOCK_FILL_MIN,
             cy = sum(p[1] for p in poly) / len(poly)
             if not (x - mx <= cx <= x + w + mx and y - my <= cy <= y + h + my):
                 continue
+            if _nearest_box(cx, cy) != box:
+                continue                      # belongs to a closer symbol
             token = _norm(text)
             if not token:
                 continue

@@ -59,11 +59,11 @@ def try_block_form(image_path):
 def _is_degenerate(graph):
     """True when the gate graph carries no real circuit structure.
 
-    A block symbol is not always gate-free: the edge-trigger triangle drawn
-    inside it is detected as a NOT gate, so gating the block path on "no gates
-    at all" missed every clocked symbol.  What actually distinguishes them is
-    connectivity -- a real gate-level circuit wires gates to each other, a
-    stray triangle wires to nothing.
+    Kept for reference: the block path is now tried whenever the gate path
+    recognises nothing, which is strictly broader.  A block symbol's
+    edge-trigger triangles and box edges are detected as a handful of stray
+    gates that are sometimes wired to each other, so "nothing is wired" was too
+    strict and a two-symbol master-slave never reached the block reader.
     """
     return not any(src in graph
                    for node in graph.values()
@@ -186,7 +186,8 @@ with c2:
 # equations panels cannot show gate-level output that the block result then
 # contradicts.  A clocked symbol's edge-trigger triangle is detected as a NOT
 # gate, which previously left "G1 = NOT(A)" on screen next to a JK flip-flop.
-block_graph = try_block_form(tmp_path) if _is_degenerate(result.graph) else {}
+_gate_matches = compress(result.graph).matches if result.graph else []
+block_graph = try_block_form(tmp_path) if not _gate_matches else {}
 if block_graph:
     result.graph = block_graph
     result.gates = []

@@ -1,0 +1,240 @@
+{
+ "images (1).jpg": {
+  "expect": [
+   "SRLATCH"
+  ],
+  "gate_edges": 2,
+  "gates": 2,
+  "got": [
+   "SRLATCH"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "gate"
+ },
+ "images (1).png": {
+  "expect": [
+   "SRFF_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 1,
+  "got": [
+   "SRFF_BLOCK"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "block"
+ },
+ "images (10).png": {
+  "expect": [
+   "DLATCH_BLOCK",
+   "DLATCH_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 2,
+  "got": [
+   "DFF_BLOCK",
+   "DFF_BLOCK"
+  ],
+  "ok": true,
+  "pass": false,
+  "path": "block"
+ },
+ "images (11).png": {
+  "expect": [
+   "JKFF_BLOCK",
+   "JKFF_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 1,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (12).png": {
+  "expect": [
+   "DFF"
+  ],
+  "gate_edges": 2,
+  "gates": 5,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (13).png": {
+  "expect": [
+   "DFF"
+  ],
+  "gate_edges": 1,
+  "gates": 3,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (14).png": {
+  "expect": [
+   "JKFF_BLOCK",
+   "JKFF_BLOCK"
+  ],
+  "gate_edges": 3,
+  "gates": 4,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (2).jpg": {
+  "expect": [
+   "DLATCH"
+  ],
+  "gate_edges": 3,
+  "gates": 5,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (2).png": {
+  "expect": [
+   "JKFF"
+  ],
+  "gate_edges": 3,
+  "gates": 4,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (3).jpg": {
+  "expect": [
+   "JKFF"
+  ],
+  "gate_edges": 3,
+  "gates": 4,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (3).png": {
+  "expect": [
+   "DLATCH"
+  ],
+  "gate_edges": 3,
+  "gates": 5,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (4).jpg": {
+  "expect": [
+   "GATED_SRLATCH"
+  ],
+  "gate_edges": 0,
+  "gates": 2,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (4).png": {
+  "expect": [
+   "DLATCH"
+  ],
+  "gate_edges": 4,
+  "gates": 5,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (5).jpg": {
+  "expect": [
+   "DFF"
+  ],
+  "gate_edges": 8,
+  "gates": 9,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (5).png": {
+  "expect": [
+   "DFF_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 1,
+  "got": [
+   "DFF_BLOCK"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "block"
+ },
+ "images (6).png": {
+  "expect": [
+   "JKFF"
+  ],
+  "gate_edges": 1,
+  "gates": 4,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (7).png": {
+  "expect": [
+   "TFF_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 1,
+  "got": [
+   "TFF_BLOCK"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "block"
+ },
+ "images (8).png": {
+  "expect": [
+   "JKFF"
+  ],
+  "gate_edges": 2,
+  "gates": 4,
+  "got": [],
+  "ok": true,
+  "pass": false,
+  "path": "gate"
+ },
+ "images (9).png": {
+  "expect": [
+   "JKFF_BLOCK"
+  ],
+  "gate_edges": 0,
+  "gates": 1,
+  "got": [
+   "JKFF_BLOCK"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "block"
+ },
+ "images.png": {
+  "expect": [
+   "GATED_SRLATCH"
+  ],
+  "gate_edges": 4,
+  "gates": 4,
+  "got": [
+   "GATED_SRLATCH"
+  ],
+  "ok": true,
+  "pass": true,
+  "path": "gate"
+ }
+}

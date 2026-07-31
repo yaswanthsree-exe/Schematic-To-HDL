@@ -660,6 +660,12 @@ def preprocess(img: np.ndarray, boxes: List[Dict]) -> Tuple[np.ndarray, np.ndarr
         gate_free[:, -2:]  = bg_fill
         log.info("preprocess: border trim applied (outer_dist=%.1f)", bg_dist)
     for b in boxes:
+        # NOTE: erasing only the gate's connected BODY (so wires crossing the
+        # bounding-box corners survive) was tried and reverted.  It recovered a
+        # few feedback edges but cost 14 corpus images and 7 propagations
+        # (749->742) while fixing no sequential circuit, because the body of a
+        # filled or touching symbol cannot be separated from the wire reliably.
+        # See NEEDS_FIXING.md B1.
         p = GATE_PAD
         gate_free[max(0,b["y"]-p) : b["y"]+b["h"]+p,
                   max(0,b["x"]-p) : b["x"]+b["w"]+p] = bg_fill
