@@ -1,8 +1,20 @@
 # NEEDS FIXING — known gaps, limitations and recommended fixes
 
-**Branch:** `feature/part1-wire-tracing`
-**Status of this document:** current as of the flip-flop recognition work.
+**Branch:** `needs-fixing`
 **Frozen reference:** `feature/pattern-engine` holds the last known-good state.
+
+**Where things stand**
+
+| | |
+|---|---|
+| Sequential corpus | **9/20** — block-form **7/7**, gate-level **2/13** |
+| Combinational corpus (177 images) | 749 propagations, 0 regressions |
+| Unit tests | 211 |
+
+Every remaining gate-level failure now has the **same single cause**: the
+cross-coupling is lost at the wire crossing (B1). Detection, gate classes,
+hidden gates, block wiring and latch semantics have all been fixed; this is the
+sole blocker for the other 11.
 
 This is a deliberately blunt list of what does **not** work, why, and what would
 fix it. Everything here has been reproduced and measured, not guessed. Where a
@@ -24,33 +36,40 @@ given so it can be re-checked.
 
 ## A — Silently wrong
 
-### A1. Block-form external wiring is never traced *(open)*
+### A1. Block-form external wiring *(FIXED — naming still open)*
 
-A block symbol is recognised from its box and pin labels only. The wires
-**running to** those pins are not followed, so:
+**Fixed.** `pin_nets()` erases the boxes, takes connected components of the
+remaining ink, and snaps each located pin label to the wire beside it.
+`graph_from_blocks()` then resolves an input sharing a net with another block's
+output into a reference to that block, collapses input pins sharing one wire
+into one signal, and drops an output feeding another block from the circuit's
+ports.
 
-* two pins driven by the same signal look independent;
-* the outside net names are lost.
+Verified: a JK symbol with `T` tied to both `J` and `K` now emits
+`case ({J, J})`, which simulates as a true T flip-flop (input 0 holds, input 1
+toggles). A master-slave pair is wired master `Q` -> slave `J`. Before this,
+both came out as independent ports and disconnected devices.
 
-**Observed:** a JK symbol with `T` wired to *both* `J` and `K` — a T flip-flop
-built from a JK — emits
+#### A1a. Merged and external signals keep a PIN name, not the drawn name
+
+What remains is naming. The merged signal above is called `J` because it is
+named after one of the pins it joins, but the schematic labels that wire **T**:
 
 ```verilog
-module images__9_ (input CLK, input J, input K, output Q, output Qbar);
+module images__9_ (input CLK, input J, output Q, output Qbar);
+                                    ^ should be T
 ```
 
-`J` and `K` are exposed as separate ports. The device is right; the circuit
-around it is wrong.
+The hardware is correct; the interface reads wrong. Anyone reusing the HDL sees
+a JK-ish module with a stray `J` where a clean `T` port belongs. The same gap
+turns an OCR misread into a port name — an `S` pin read as `5` became `n_5`.
 
-**Impact:** any schematic with more than one block, or with blocks wired to each
-other (a shift register, a ripple counter), comes out as disconnected devices.
+**Recommended fix:** `pin_nets()` already knows which net each pin sits on. Take
+the OCR tokens that fall on a net but outside any box, and use one as the net's
+name in preference to the pin name. Cheap, and it also recovers `CLK`/`Clk`
+properly.
 
-**Recommended fix:** give the block path its own connectivity stage. Locate each
-pin stub where it meets the box edge, follow it into the existing skeleton/net
-graph (`build_nets` already produces exactly this), and resolve shared nets and
-outside labels. Reuses Part 1 machinery; no new CV.
-
-**Effort:** days. **Risk:** low — additive, does not touch the gate path.
+**Effort:** hours. **Risk:** low — naming only, no change to connectivity.
 
 ---
 
@@ -58,8 +77,8 @@ outside labels. Reuses Part 1 machinery; no new CV.
 
 ### B1. Gate-drawn flip-flops from real images *(open — the big one)*
 
-**12 of 12** gate-level flip-flop schematics in the test set fail. This is the
-single largest gap.
+**11 of 13** gate-level schematics fail, and all 11 for this one reason. It is
+now the only thing standing between the tool and the rest of the corpus.
 
 The pattern engine is **not** at fault: every one of these circuits is
 recognised correctly from a hand-written graph (see `production_v2/tests/`).
@@ -77,14 +96,22 @@ Two concrete breaks were located:
 
 * the cross-coupling wire breaks across a **31 px gap** where it passes the
   corner of a gate's bounding box;
-* the outer Q/Q̄ feedback rectangle breaks across a **343 px** span.
+* the outer Q/Q̄ feedback rectangle breaks across a **343 px** span;
+* on another schematic the two halves sit **50 px apart with only 20% ink** on
+  the straight line between them — the wire routes around, so a naive bridge is
+  not justified.
+
+**Closest near-miss:** `images (4).jpg` now yields 4 correct gates with both
+AND→NOR edges traced, **2 edges short** of recognition. Those 2 edges are the
+crossing.
 
 **Root causes (both plausible, neither yet fixed):**
 
-1. **Gate erasure uses the bounding rectangle.** A NAND's body is rounded, so a
-   wire routed past the box corner is erased along with the gate.
-   *Fix:* erase the gate's actual ink — flood-fill the body from inside the box
-   — instead of filling the whole rectangle.
+1. ~~**Gate erasure uses the bounding rectangle.**~~ **TRIED AND REVERTED.**
+   Erasing only the gate's connected body cost 14 corpus images (propagation
+   749→742) and fixed no sequential circuit, because a filled or touching
+   symbol's body cannot be separated from the wire reliably. Reasoning is
+   recorded at the call site in `predict.py`.
 2. **`DIR_WEIGHT = 35` rewards wires "approaching from the correct side".**
    Feedback runs right-to-left and is therefore actively penalised. Sequential
    circuits violate the left-to-right assumption the tracer was tuned on.
@@ -230,10 +257,11 @@ flip-flop behaves like the gates it replaced.
 
 ## Recommended order of work
 
-1. **D1** — build the sequential corpus. Everything sequential is unmeasured
-   until this exists.
-2. **B1** — the wire-tracing fixes, validated against D1. Biggest payoff.
-3. **A1** — block pin tracing. Unlocks multi-block schematics.
+1. ~~**D1** — build the sequential corpus.~~ **DONE** — `sequential_corpus/`.
+2. **B1** — the wire-tracing fix, validated against D1. The only blocker left
+   for gate-level recognition, and worth 11 images.
+3. ~~**A1** — block pin tracing.~~ **DONE.** Its follow-on **A1a** (net naming)
+   is hours of work and improves every block-form result.
 4. **B2 / B3** — fill out the pattern and device libraries. Cheap, parallelisable.
 5. **C1 / C2** — OCR-driven clock and Q/Q̄ binding.
 6. **D2 / C4** — verification and matching strategy, once the library is large.
