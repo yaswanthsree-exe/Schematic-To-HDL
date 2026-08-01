@@ -105,22 +105,47 @@ Two concrete breaks were located:
 AND→NOR edges traced, **2 edges short** of recognition. Those 2 edges are the
 crossing.
 
-**Root causes (both plausible, neither yet fixed):**
+**Root cause, now measured.** The 12 gate-level images break down as:
 
-1. ~~**Gate erasure uses the bounding rectangle.**~~ **TRIED AND REVERTED.**
-   Erasing only the gate's connected body cost 14 corpus images (propagation
-   749→742) and fixed no sequential circuit, because a filled or touching
-   symbol's body cannot be separated from the wire reliably. Reasoning is
-   recorded at the call site in `predict.py`.
-2. **`DIR_WEIGHT = 35` rewards wires "approaching from the correct side".**
-   Feedback runs right-to-left and is therefore actively penalised. Sequential
-   circuits violate the left-to-right assumption the tracer was tuned on.
-   *Fix:* relax directional scoring for wires that terminate on two gate pins,
-   which a genuine feedback wire always does.
+| Symptom | Count |
+|---|---|
+| **crossing merge** — an output-only net and an input-only net that should be one wire | **8** |
+| bad skeleton — JPEG thick wires, 0.388 junctions/pixel vs a normal 0.07 | 1 |
+| other — lost gates, or a near-miss | 3 |
 
-**Effort:** weeks. **Risk:** high. `context.md` documents plausible-looking
-changes in this area costing real accuracy (propagation 322→314 and 322→315,
-both reverted). Do not attempt without D1 below.
+So it is *mostly* one cause, not entirely one. Earlier wording in this file
+claimed all of them shared a single cause; that was wrong.
+
+At a crossing the two wires meet, run together for a few pixels, then separate.
+`build_nets` clusters junction nodes joined by edges up to `MESH_CLUSTER_LEN`
+(4 px), but the stub inside a real crossing measures **7.2, 10.0 and 17.0 px**.
+The halves therefore stay separate, each reads as a plain 3-arm T-junction, and
+the "≤3 arms → merge all" rule welds the two crossing wires into one net. The
+feedback is then lost, and `build_gate_graph` turns the orphaned halves into
+phantom primary inputs.
+
+**Tried, and the result is a genuine trade-off — not a free win.**
+
+Raising the clustering threshold to 12 px works exactly as predicted on the
+sequential side: a NOR-latch T flip-flop (`images (3).jpg`) went from 3 to **6**
+gate-to-gate edges and came out **structurally correct** — cross-coupling and
+both feedback paths recovered.
+
+It also merges genuinely adjacent junctions. The combinational corpus fell
+**749 → 740** propagations, 8 images worse, one collapsing from 9 edges to 1.
+That is the same failure mode `context.md` records twice before (322→314,
+322→315), and the `dot_snap_r` note explains why: real bus taps sit 13–19 px
+apart, which a 12 px radius starts to swallow.
+
+The value is left at the safe setting with the reasoning recorded at the call
+site, so the next attempt starts from the measurement rather than from scratch.
+
+**What would actually settle it:** the widened clustering must apply *only*
+where the resulting cluster has exactly four external arms that pair
+straight-through — a crossing — and never where it would merge two independent
+junctions. A blanket threshold cannot distinguish those; the arm test can. That
+is a targeted change to the cluster-formation rule, and it is the one piece of
+work standing between the current 9/20 and most of the remaining 11.
 
 ### B2. Missing gate-level patterns *(partly closed)*
 

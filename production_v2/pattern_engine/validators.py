@@ -184,6 +184,18 @@ def _d_latch(graph: GateGraph, match: Match) -> bool:
     return _shared_external(graph, gating, ids)
 
 
+@register("jk_flipflop_nor")
+def _jk_flipflop_nor(graph: GateGraph, match: Match) -> bool:
+    """JK built from AND gating a cross-coupled NOR latch.
+
+    Same functional test as the NAND form -- gated latch plus output feedback
+    into the input gates -- but the storage pair is NOR and the gating gates are
+    AND, which is why it needs its own entry rather than a redrawing of the
+    NAND pattern.
+    """
+    return _jk_with_core(graph, match, "NOR")
+
+
 @register("jk_flipflop")
 def _jk_flipflop(graph: GateGraph, match: Match) -> bool:
     """Gated latch plus output feedback into the input gates.
@@ -192,7 +204,11 @@ def _jk_flipflop(graph: GateGraph, match: Match) -> bool:
     J=K=1 toggle rather than forbidden.  So each gating gate must be fed by a
     core output, and the two must still share a clock.
     """
-    split = _split_core_and_gating(graph, match, "NAND")
+    return _jk_with_core(graph, match, "NAND")
+
+
+def _jk_with_core(graph: GateGraph, match: Match, cls: str) -> bool:
+    split = _split_core_and_gating(graph, match, cls)
     if split is None:
         return False
     core, gating = split

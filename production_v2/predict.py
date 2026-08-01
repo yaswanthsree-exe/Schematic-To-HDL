@@ -1669,6 +1669,18 @@ def build_nets(
     #   • 4+ external arms, no dot → wire crossing: merge straight-through
     #     arm pairs only; internal micro-edges join nothing.
     MESH_CLUSTER_LEN = 4.0   # micro-edge max length for clustering
+    # Junction-to-junction stubs inside one crossing run longer than a mesh
+    # micro-edge: measured 7.2, 10.0 and 17.0 px on real cross-coupled latches,
+    # so at 4 px the halves of a crossing stay separate and the "<=3 arms ->
+    # merge all" rule welds the two crossing wires together.
+    #
+    # Raising this to 12.0 DOES fix that -- a NOR-latch T flip-flop went from 3
+    # to 6 gate-to-gate edges and became structurally correct -- but it also
+    # merges genuinely adjacent junctions: the combinational corpus fell from
+    # 749 to 740 propagations with 8 images worse, one collapsing from 9 edges
+    # to 1.  The trade is real and not worth taking blind, so it stays at the
+    # safe value.  See NEEDS_FIXING B1.
+    CROSS_CLUSTER_LEN = MESH_CLUSTER_LEN
     cross_centers: List[Tuple[int, int]] = []   # centres of CROSS-SPLIT clusters
 
     jnodes = [nidx for nidx in node_edgs
@@ -1684,7 +1696,7 @@ def build_nets(
 
     for eid, edge in enumerate(skel_graph.edges):
         if (edge.a in jset and edge.b in jset
-                and _edge_euclidean_len(edge) <= MESH_CLUSTER_LEN):
+                and _edge_euclidean_len(edge) <= CROSS_CLUSTER_LEN):
             ra, rb = _cfind(edge.a), _cfind(edge.b)
             if ra != rb:
                 _parent[ra] = rb
@@ -1720,7 +1732,7 @@ def build_nets(
                 seen_a.add(eid)
                 e = skel_graph.edges[eid]
                 if (e.a in mset and e.b in mset
-                        and _edge_euclidean_len(e) <= MESH_CLUSTER_LEN):
+                        and _edge_euclidean_len(e) <= CROSS_CLUSTER_LEN):
                     continue          # internal micro-edge
                 out.append(eid)
         return out
@@ -1778,7 +1790,7 @@ def build_nets(
         if edge.a not in jset or edge.b not in jset:
             continue
         blen = _edge_euclidean_len(edge)
-        if blen <= MESH_CLUSTER_LEN or blen > X_BRIDGE_MAX_LEN:
+        if blen <= CROSS_CLUSTER_LEN or blen > X_BRIDGE_MAX_LEN:
             continue
         ra, rb = _cfind(edge.a), _cfind(edge.b)
         if ra != rb:
@@ -1852,7 +1864,7 @@ def build_nets(
                     if skel_graph.edges[eid].a in cset
                     and skel_graph.edges[eid].b in cset
                     and (_edge_euclidean_len(skel_graph.edges[eid])
-                         <= MESH_CLUSTER_LEN or eid in bridge_eids)}
+                         <= CROSS_CLUSTER_LEN or eid in bridge_eids)}
         external = [eid for eid in inc if eid not in internal]
         ccx = int(sum(skel_graph.node_xy[n_][0] for n_ in cnodes) / len(cnodes))
         ccy = int(sum(skel_graph.node_xy[n_][1] for n_ in cnodes) / len(cnodes))
