@@ -103,12 +103,17 @@ def _split_core_and_gating(graph: GateGraph, match: Match,
     # Only the CORE pair must be of *cls*.  The gating gates differ by family:
     # a NAND latch is gated by NANDs, but a NOR latch is gated by ANDs, so
     # requiring all four to match rejected every NOR-based gated latch.
-    cores = _mutual_pairs(graph, ids)
+    # The storage pair is the mutually-coupled pair OF THE CORE CLASS.
+    #
+    # Filtering by class cannot be left until afterwards.  In the NOR form the
+    # outer feedback runs same-side, so each gating AND is mutually coupled with
+    # the NOR it drives as well -- three mutual pairs in total, and "exactly one
+    # pair is the core" then rejected a perfectly good T flip-flop.
+    cores = [p for p in _mutual_pairs(graph, ids)
+             if all(graph[i]["cls"] == cls for i in p)]
     if len(cores) != 1:
         return None
     core = cores[0]
-    if any(graph[i]["cls"] != cls for i in core):
-        return None
     gating = [i for i in ids if i not in core]
     return (core, gating) if len(gating) == 2 else None
 

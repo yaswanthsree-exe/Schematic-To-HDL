@@ -140,9 +140,25 @@ def _bind_ports(graph: GateGraph, mapping: Dict[str, str],
     bound: Dict[str, str] = {}
     used: Set[str] = set()
 
+    def _covers_everything() -> bool:
+        """Every external signal must be claimed by some port, or compressing
+        would silently drop it."""
+        if pattern.allow_unbound_inputs:
+            return True
+        claimed = set(bound.values())
+        return all(src in claimed
+                   for gid in inside
+                   for src in _external_inputs(graph, gid, inside))
+
     def _solve(k: int) -> bool:
         if k == len(order):
-            return True
+            # Coverage is checked HERE, inside the search, so a complete but
+            # incomplete-covering assignment is rejected and the solver keeps
+            # looking.  Checking it afterwards meant the first valid-looking
+            # answer won and the match was then thrown away: a T flip-flop with
+            # T tied to J and K let all three ports pick T, leaving the clock
+            # unclaimed, and the device failed to match at all.
+            return _covers_everything()
         name, choices = cand[order[k]]
         for src in sorted(choices):
             if not pattern.allow_shared_inputs and src in used:
@@ -157,13 +173,6 @@ def _bind_ports(graph: GateGraph, mapping: Dict[str, str],
 
     if not _solve(0):
         return None
-
-    if not pattern.allow_unbound_inputs:
-        claimed = set(bound.values())
-        for gid in inside:
-            for src in _external_inputs(graph, gid, inside):
-                if src not in claimed:
-                    return None        # an undeclared signal would be dropped
 
     return dict(bound)
 
